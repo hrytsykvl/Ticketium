@@ -16,3 +16,6 @@ Ticketium lets organizers create events and set seat capacities, while buyers br
 
 - [Software Requirements Specification](docs/SRS.md) — functional specification, UML, identity management.
 - [Architecture](docs/ARCHITECTURE.md) — architectural style and Mermaid diagrams.
+- [Error Handling](docs/ERROR_HANDLING.md) — RFC 9457 Problem Details design and the [OpenAPI spec](docs/openapi.yaml) of 11 endpoints.
+  View the spec in [Swagger Editor](https://editor.swagger.io/?url=https://raw.githubusercontent.com/hrytsykvl/Ticketium/main/docs/openapi.yaml).
+- [Error Scenarios](docs/ERROR_SCENARIOS.md) ([PDF](docs/ERROR_SCENARIOS.pdf)) — request, error response and client reaction for every error of every endpoint.
