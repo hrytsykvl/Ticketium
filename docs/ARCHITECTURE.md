@@ -83,7 +83,7 @@ erDiagram
     USER ||--o{ EVENT : organizes
     VENUE ||--o{ EVENT : hosts
     EVENT ||--o{ TICKET : has
-    TICKET ||--o| TRANSACTION : "paid by"
+    TRANSACTION |o--|{ TICKET : covers
 
     USER {
         uuid id PK
@@ -103,10 +103,15 @@ erDiagram
         uuid organizer_id FK
         string title
         datetime starts_at
+        datetime sales_close_at
+        int capacity
+        decimal price
+        string status
     }
     TICKET {
         uuid id PK
         uuid event_id FK
+        uuid transaction_id FK
         string seat_label
         string status
         decimal price
@@ -114,7 +119,6 @@ erDiagram
     TRANSACTION {
         uuid id PK
         uuid user_id FK
-        uuid ticket_id FK
         decimal amount
         string status
         datetime created_at
