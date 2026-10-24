@@ -1,0 +1,1426 @@
+openapi: 3.0.3
+info:
+  title: Ticketium API
+  version: 0.1.0
+  description: |
+    REST API of **Ticketium** — event ticketing & seat reservation system.
+
+    This contract focuses on **error handling**. Every non-2xx response is an
+    [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) *Problem Details* object
+    served as `application/problem+json`. The catalogue of problem types, their
+    meaning and the expected client reaction is described in
+    [ERROR_HANDLING.md](https://github.com/hrytsykvl/Ticketium/blob/main/docs/ERROR_HANDLING.md).
+
+    Interactive view: [Swagger Editor](https://editor.swagger.io/?url=https://raw.githubusercontent.com/hrytsykvl/Ticketium/main/docs/openapi.yaml).
+
+    Conventions:
+    - `type` is a stable URI under `https://ticketium.example/problems/` and is the
+      value clients must branch on; `title` is a stable human-readable summary of the type.
+    - `detail` explains this specific occurrence and must not be parsed.
+    - `instance` is the request path; `traceId` correlates the response with server logs.
+    - `Retry-After` is sent for `429` and `503` responses.
+  contact:
+    name: Team x53AIBoosted
+
+servers:
+  - url: https://api.ticketium.example/api/v1
+    description: Production (illustrative)
+  - url: http://localhost:5000/api/v1
+    description: Local development
+
+tags:
+  - name: Identity
+    description: Sign up and sign in (FR-1, FR-2)
+  - name: Catalog
+    description: Events browsing and management (FR-4 – FR-7)
+  - name: Booking
+    description: Seat holds (FR-8, FR-9, FR-11)
+  - name: Payment
+    description: Checkout and ticket issuance (FR-10 – FR-12)
+  - name: Tickets
+    description: Buyer's purchased tickets (FR-14)
+
+paths:
+  # ---------------------------------------------------------------- Identity
+  /auth/sign-up:
+    post:
+      tags: [Identity]
+      operationId: signUp
+      summary: Sign up (create a new account)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SignUpRequest'
+      responses:
+        '201':
+          description: Account created.
+          headers:
+            Location:
+              $ref: '#/components/headers/Location'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '409':
+          description: The email is already registered.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: https://ticketium.example/problems/email-already-registered
+                title: Email is already registered
+                status: 409
+                detail: An account with email 'maksym@example.com' already exists.
+                instance: /api/v1/auth/sign-up
+                traceId: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /auth/sign-in:
+    post:
+      tags: [Identity]
+      operationId: signIn
+      summary: Sign in and obtain a JWT
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SignInRequest'
+      responses:
+        '200':
+          description: Authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          description: |
+            Email or password is wrong. The same problem is returned for an unknown
+            email and for a wrong password to prevent account enumeration.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: https://ticketium.example/problems/invalid-credentials
+                title: Invalid credentials
+                status: 401
+                detail: The email or password is incorrect.
+                instance: /api/v1/auth/sign-in
+                traceId: 00-1c2b3a4d5e6f708192a3b4c5d6e7f809-1a2b3c4d5e6f7081-01
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ---------------------------------------------------------------- Catalog
+  /events:
+    get:
+      tags: [Catalog]
+      operationId: listEvents
+      summary: Browse and search events
+      security: []
+      parameters:
+        - name: q
+          in: query
+          description: Full-text search by event title.
+          schema:
+            type: string
+            maxLength: 100
+        - name: venueId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: from
+          in: query
+          description: Events starting at or after this moment.
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          description: Events starting before this moment. Must be later than `from`.
+          schema:
+            type: string
+            format: date-time
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: pageSize
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: A page of events.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventPage'
+        '400':
+          description: Invalid query parameters.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ValidationProblemDetails'
+              example:
+                type: https://ticketium.example/problems/validation-error
+                title: One or more validation errors occurred
+                status: 400
+                detail: The request query contains 2 invalid parameters.
+                instance: /api/v1/events
+                traceId: 00-8a7b6c5d4e3f201918a7b6c5d4e3f201-9a8b7c6d5e4f3021-01
+                errors:
+                  - parameter: to
+                    detail: Must be later than 'from'.
+                  - parameter: pageSize
+                    detail: Must be between 1 and 100.
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    post:
+      tags: [Catalog]
+      operationId: createEvent
+      summary: Create an event (Organizer)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateEventRequest'
+      responses:
+        '201':
+          description: Event created.
+          headers:
+            Location:
+              $ref: '#/components/headers/Location'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Event'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          description: Caller is authenticated but is not an Organizer.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: https://ticketium.example/problems/forbidden
+                title: Access denied
+                status: 403
+                detail: Only users with the 'Organizer' role can create events.
+                instance: /api/v1/events
+                traceId: 00-2f3e4d5c6b7a89012f3e4d5c6b7a8901-2f3e4d5c6b7a8901-01
+        '404':
+          description: Referenced venue does not exist.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/NotFoundProblemDetails'
+              example:
+                type: https://ticketium.example/problems/not-found
+                title: Resource not found
+                status: 404
+                detail: Venue '7d1c0a52-3c8e-4d6b-9f7e-1a2b3c4d5e6f' was not found.
+                instance: /api/v1/events
+                traceId: 00-3a4b5c6d7e8f90a13a4b5c6d7e8f90a1-3a4b5c6d7e8f90a1-01
+                resource: venue
+        '422':
+          description: Request is well-formed but violates a business rule.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/BusinessRuleProblemDetails'
+              example:
+                type: https://ticketium.example/problems/business-rule-violation
+                title: Business rule violated
+                status: 422
+                detail: Venue 'Main Hall' is already booked for another event at 2026-12-31T19:00:00Z.
+                instance: /api/v1/events
+                traceId: 00-4b5c6d7e8f90a1b24b5c6d7e8f90a1b2-4b5c6d7e8f90a1b2-01
+                rule: venue-double-booking
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /events/{eventId}:
+    parameters:
+      - $ref: '#/components/parameters/EventId'
+    get:
+      tags: [Catalog]
+      operationId: getEvent
+      summary: Get event details with seat availability
+      security: []
+      responses:
+        '200':
+          description: Event details.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventDetails'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    put:
+      tags: [Catalog]
+      operationId: updateEvent
+      summary: Edit an event (owning Organizer)
+      description: |
+        Replaces the editable fields of the event; the venue cannot be changed.
+        To cancel an event use `POST /events/{eventId}/cancellation`.
+
+        Uses optimistic concurrency: the client must send the `ETag` it received
+        in `If-Match`. A concurrent edit by another session yields `412`.
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateEventRequest'
+      responses:
+        '200':
+          description: Event updated.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Event'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          description: Caller is not the organizer of this event.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: https://ticketium.example/problems/forbidden
+                title: Access denied
+                status: 403
+                detail: Only the organizer of this event can modify it.
+                instance: /api/v1/events/3fa85f64-5717-4562-b3fc-2c963f66afa6
+                traceId: 00-5c6d7e8f90a1b2c35c6d7e8f90a1b2c3-5c6d7e8f90a1b2c3-01
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: The event is in a state that does not allow this change.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: https://ticketium.example/problems/event-not-modifiable
+                title: Event cannot be modified
+                status: 409
+                detail: The event was cancelled on 2026-10-20 and can no longer be edited.
+                instance: /api/v1/events/3fa85f64-5717-4562-b3fc-2c963f66afa6
+                traceId: 00-6d7e8f90a1b2c3d46d7e8f90a1b2c3d4-6d7e8f90a1b2c3d4-01
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '422':
+          description: Change violates a business rule.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/BusinessRuleProblemDetails'
+              example:
+                type: https://ticketium.example/problems/business-rule-violation
+                title: Business rule violated
+                status: 422
+                detail: Capacity cannot be reduced to 100 because 142 tickets are already sold.
+                instance: /api/v1/events/3fa85f64-5717-4562-b3fc-2c963f66afa6
+                traceId: 00-7e8f90a1b2c3d4e57e8f90a1b2c3d4e5-7e8f90a1b2c3d4e5-01
+                rule: capacity-below-sold
+        '428':
+          $ref: '#/components/responses/PreconditionRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /events/{eventId}/cancellation:
+    parameters:
+      - $ref: '#/components/parameters/EventId'
+    post:
+      tags: [Catalog]
+      operationId: cancelEvent
+      summary: Cancel an event (owning Organizer)
+      description: |
+        Cancels the event instead of deleting it: the event stays visible with status
+        `Cancelled`, active holds are released, and refunds for sold tickets are started
+        asynchronously. Ticket and transaction records are kept for audit (SRS C-3).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CancelEventRequest'
+      responses:
+        '201':
+          description: Event cancelled; refunds started.
+          headers:
+            Location:
+              $ref: '#/components/headers/Location'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventCancellation'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          description: Caller is not the organizer of this event.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: https://ticketium.example/problems/forbidden
+                title: Access denied
+                status: 403
+                detail: Only the organizer of this event can cancel it.
+                instance: /api/v1/events/3fa85f64-5717-4562-b3fc-2c963f66afa6/cancellation
+                traceId: 00-5c6d7e8f90a1b2c35c6d7e8f90a1b2c3-5c6d7e8f90a1b2c3-01
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: The event cannot be cancelled in its current state.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              examples:
+                alreadyCancelled:
+                  summary: Event is already cancelled
+                  value:
+                    type: https://ticketium.example/problems/event-already-cancelled
+                    title: Event is already cancelled
+                    status: 409
+                    detail: The event was already cancelled on 2026-10-20T09:15:00Z.
+                    instance: /api/v1/events/3fa85f64-5717-4562-b3fc-2c963f66afa6/cancellation
+                    traceId: 00-6d7e8f90a1b2c3d46d7e8f90a1b2c3d4-6d7e8f90a1b2c3d4-01
+                alreadyStarted:
+                  summary: Event has already started
+                  value:
+                    type: https://ticketium.example/problems/event-already-started
+                    title: Event has already started
+                    status: 409
+                    detail: The event started at 2026-12-31T19:00:00Z and can no longer be cancelled.
+                    instance: /api/v1/events/3fa85f64-5717-4562-b3fc-2c963f66afa6/cancellation
+                    traceId: 00-7e8f90a1b2c3d4e57e8f90a1b2c3d4e5-7e8f90a1b2c3d4e5-01
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ---------------------------------------------------------------- Booking
+  /events/{eventId}/holds:
+    parameters:
+      - $ref: '#/components/parameters/EventId'
+    post:
+      tags: [Booking]
+      operationId: createHold
+      summary: Hold seats for checkout
+      description: |
+        Atomically acquires time-limited locks for all requested seats (all-or-nothing).
+        If any seat is already held or sold, no seat is held and `409 seat-unavailable`
+        is returned listing the conflicting seats.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateHoldRequest'
+      responses:
+        '201':
+          description: Seats are held until `expiresAt`.
+          headers:
+            Location:
+              $ref: '#/components/headers/Location'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Hold'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Seats cannot be held right now.
+          content:
+            application/problem+json:
+              schema:
+                anyOf:
+                  - $ref: '#/components/schemas/SeatUnavailableProblemDetails'
+                  - $ref: '#/components/schemas/ProblemDetails'
+              examples:
+                seatUnavailable:
+                  summary: Another buyer holds or bought a seat
+                  value:
+                    type: https://ticketium.example/problems/seat-unavailable
+                    title: Seat is not available
+                    status: 409
+                    detail: 1 of 2 requested seats is already held or sold.
+                    instance: /api/v1/events/3fa85f64-5717-4562-b3fc-2c963f66afa6/holds
+                    traceId: 00-8f90a1b2c3d4e5f68f90a1b2c3d4e5f6-8f90a1b2c3d4e5f6-01
+                    unavailableSeats: [A-12]
+                eventNotOnSale:
+                  summary: Event is cancelled, sold out or sales are closed
+                  value:
+                    type: https://ticketium.example/problems/event-not-on-sale
+                    title: Event is not on sale
+                    status: 409
+                    detail: Ticket sales for this event closed at 2026-12-31T18:00:00Z.
+                    instance: /api/v1/events/3fa85f64-5717-4562-b3fc-2c963f66afa6/holds
+                    traceId: 00-90a1b2c3d4e5f60790a1b2c3d4e5f607-90a1b2c3d4e5f607-01
+        '422':
+          description: Buyer has reached the hold limit.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/HoldLimitProblemDetails'
+              example:
+                type: https://ticketium.example/problems/hold-limit-exceeded
+                title: Hold limit exceeded
+                status: 422
+                detail: You already hold 4 seats for this event; at most 6 seats per buyer are allowed.
+                instance: /api/v1/events/3fa85f64-5717-4562-b3fc-2c963f66afa6/holds
+                traceId: 00-a1b2c3d4e5f60718a1b2c3d4e5f60718-a1b2c3d4e5f60718-01
+                limit: 6
+                current: 4
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /holds/{holdId}:
+    parameters:
+      - $ref: '#/components/parameters/HoldId'
+    delete:
+      tags: [Booking]
+      operationId: releaseHold
+      summary: Release a hold before it expires
+      description: |
+        Idempotent. Holds belonging to other users are reported as `404` (not `403`)
+        so that hold identifiers cannot be enumerated.
+      responses:
+        '204':
+          description: Hold released (or was already released).
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Hold has already been converted into tickets.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: https://ticketium.example/problems/hold-already-paid
+                title: Hold is already paid
+                status: 409
+                detail: Hold has been paid and converted into tickets; request a refund instead.
+                instance: /api/v1/holds/9b2e6f1a-4c3d-4e5f-8a7b-6c5d4e3f2a1b
+                traceId: 00-b2c3d4e5f6071829b2c3d4e5f6071829-b2c3d4e5f6071829-01
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ---------------------------------------------------------------- Payment
+  /holds/{holdId}/payment:
+    parameters:
+      - $ref: '#/components/parameters/HoldId'
+    post:
+      tags: [Payment]
+      operationId: payForHold
+      summary: Pay for held seats and issue tickets
+      description: |
+        Charges the buyer through the external payment gateway (timeout + retries +
+        circuit breaker) and, on success, converts the hold into tickets.
+
+        The request must carry an `Idempotency-Key`. Repeating the request with the
+        same key and body returns the original result instead of charging twice.
+
+        Failure semantics (saga):
+        - `402`, `502`, `504` — the charge failed or its outcome could not be confirmed;
+          any authorization is voided and the hold is **released** (`holdReleased: true`).
+        - `503` — the circuit breaker is open, no charge was attempted; the hold is
+          **kept** until `expiresAt` and the client may retry after `Retry-After`.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentRequest'
+      responses:
+        '201':
+          description: Payment captured, tickets issued.
+          headers:
+            Location:
+              $ref: '#/components/headers/Location'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transaction'
+        '400':
+          description: Invalid body or missing / malformed `Idempotency-Key`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ValidationProblemDetails'
+              example:
+                type: https://ticketium.example/problems/validation-error
+                title: One or more validation errors occurred
+                status: 400
+                detail: The request contains 1 invalid value.
+                instance: /api/v1/holds/9b2e6f1a-4c3d-4e5f-8a7b-6c5d4e3f2a1b/payment
+                traceId: 00-c3d4e5f60718293ac3d4e5f60718293a-c3d4e5f60718293a-01
+                errors:
+                  - header: Idempotency-Key
+                    detail: Header is required and must be a UUID.
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '402':
+          description: The payment gateway declined the payment.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/PaymentProblemDetails'
+              example:
+                type: https://ticketium.example/problems/payment-declined
+                title: Payment was declined
+                status: 402
+                detail: The card issuer declined the payment (insufficient funds).
+                instance: /api/v1/holds/9b2e6f1a-4c3d-4e5f-8a7b-6c5d4e3f2a1b/payment
+                traceId: 00-d4e5f60718293a4bd4e5f60718293a4b-d4e5f60718293a4b-01
+                declineCode: insufficient_funds
+                holdReleased: true
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Request conflicts with the current state of the hold or with a previous request.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              examples:
+                alreadyPaid:
+                  summary: Hold was already paid with a different Idempotency-Key
+                  value:
+                    type: https://ticketium.example/problems/hold-already-paid
+                    title: Hold is already paid
+                    status: 409
+                    detail: This hold has already been paid; see your tickets.
+                    instance: /api/v1/holds/9b2e6f1a-4c3d-4e5f-8a7b-6c5d4e3f2a1b/payment
+                    traceId: 00-e5f60718293a4b5ce5f60718293a4b5c-e5f60718293a4b5c-01
+                idempotencyKeyReused:
+                  summary: Same Idempotency-Key, different body
+                  value:
+                    type: https://ticketium.example/problems/idempotency-key-reused
+                    title: Idempotency key reused with a different request
+                    status: 409
+                    detail: Key '5f0c7b2e-...' was already used with a different request body.
+                    instance: /api/v1/holds/9b2e6f1a-4c3d-4e5f-8a7b-6c5d4e3f2a1b/payment
+                    traceId: 00-f60718293a4b5c6df60718293a4b5c6d-f60718293a4b5c6d-01
+                requestInProgress:
+                  summary: A request with the same Idempotency-Key is still being processed
+                  value:
+                    type: https://ticketium.example/problems/request-in-progress
+                    title: Request is already in progress
+                    status: 409
+                    detail: A payment with this Idempotency-Key is still being processed.
+                    instance: /api/v1/holds/9b2e6f1a-4c3d-4e5f-8a7b-6c5d4e3f2a1b/payment
+                    traceId: 00-0718293a4b5c6d7e0718293a4b5c6d7e-0718293a4b5c6d7e-01
+        '410':
+          description: The hold expired before payment; seats were released.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/HoldExpiredProblemDetails'
+              example:
+                type: https://ticketium.example/problems/hold-expired
+                title: Hold has expired
+                status: 410
+                detail: The hold expired at 2026-10-23T14:10:00Z; please select seats again.
+                instance: /api/v1/holds/9b2e6f1a-4c3d-4e5f-8a7b-6c5d4e3f2a1b/payment
+                traceId: 00-18293a4b5c6d7e8f18293a4b5c6d7e8f-18293a4b5c6d7e8f-01
+                expiredAt: '2026-10-23T14:10:00Z'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          description: The payment gateway returned an invalid or unexpected response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/PaymentProblemDetails'
+              example:
+                type: https://ticketium.example/problems/payment-gateway-error
+                title: Payment provider error
+                status: 502
+                detail: The payment provider returned an unexpected response. You were not charged.
+                instance: /api/v1/holds/9b2e6f1a-4c3d-4e5f-8a7b-6c5d4e3f2a1b/payment
+                traceId: 00-293a4b5c6d7e8f90293a4b5c6d7e8f90-293a4b5c6d7e8f90-01
+                holdReleased: true
+        '503':
+          description: Payment is temporarily unavailable (circuit breaker open). Hold is kept.
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/PaymentProblemDetails'
+              example:
+                type: https://ticketium.example/problems/payment-unavailable
+                title: Payment is temporarily unavailable
+                status: 503
+                detail: Payments are temporarily unavailable. Your seats stay held until 2026-10-23T14:10:00Z.
+                instance: /api/v1/holds/9b2e6f1a-4c3d-4e5f-8a7b-6c5d4e3f2a1b/payment
+                traceId: 00-3a4b5c6d7e8f90a13a4b5c6d7e8f90a1-3a4b5c6d7e8f90a1-01
+                holdReleased: false
+        '504':
+          description: The payment gateway did not respond in time.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/PaymentProblemDetails'
+              example:
+                type: https://ticketium.example/problems/payment-gateway-timeout
+                title: Payment provider timed out
+                status: 504
+                detail: The payment provider did not respond in time. Any pending authorization will be voided.
+                instance: /api/v1/holds/9b2e6f1a-4c3d-4e5f-8a7b-6c5d4e3f2a1b/payment
+                traceId: 00-4b5c6d7e8f90a1b24b5c6d7e8f90a1b2-4b5c6d7e8f90a1b2-01
+                holdReleased: true
+
+  # ---------------------------------------------------------------- Tickets
+  /me/tickets:
+    get:
+      tags: [Tickets]
+      operationId: listMyTickets
+      summary: List tickets purchased by the current buyer
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: pageSize
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: A page of tickets.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TicketPage'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    EventId:
+      name: eventId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    HoldId:
+      name: holdId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      description: ETag of the representation the client is modifying.
+      schema:
+        type: string
+      example: '"7"'
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Client-generated UUID, unique per logical payment attempt. Stored for 24 h.
+      schema:
+        type: string
+        format: uuid
+
+  headers:
+    Location:
+      description: URI of the created resource.
+      schema:
+        type: string
+        format: uri-reference
+    ETag:
+      description: Version of the resource, used with `If-Match`.
+      schema:
+        type: string
+    RetryAfter:
+      description: Seconds the client should wait before retrying.
+      schema:
+        type: integer
+        minimum: 1
+    WWWAuthenticate:
+      description: Authentication challenge (RFC 6750).
+      schema:
+        type: string
+      example: Bearer error="invalid_token", error_description="The access token expired"
+
+  responses:
+    ValidationError:
+      description: The request is malformed or fails validation.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ValidationProblemDetails'
+          example:
+            type: https://ticketium.example/problems/validation-error
+            title: One or more validation errors occurred
+            status: 400
+            detail: The request contains 2 invalid values.
+            instance: /api/v1/auth/sign-up
+            traceId: 00-5c6d7e8f90a1b2c35c6d7e8f90a1b2c3-5c6d7e8f90a1b2c3-01
+            errors:
+              - pointer: '#/email'
+                detail: Must be a valid email address.
+              - pointer: '#/password'
+                detail: Must be at least 8 characters long.
+
+    Unauthenticated:
+      description: Access token is missing, malformed or expired.
+      headers:
+        WWW-Authenticate:
+          $ref: '#/components/headers/WWWAuthenticate'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: https://ticketium.example/problems/unauthenticated
+            title: Authentication required
+            status: 401
+            detail: The access token expired at 2026-10-23T13:00:00Z.
+            instance: /api/v1/me/tickets
+            traceId: 00-6d7e8f90a1b2c3d46d7e8f90a1b2c3d4-6d7e8f90a1b2c3d4-01
+
+    NotFound:
+      description: The resource does not exist or is not visible to the caller.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/NotFoundProblemDetails'
+          example:
+            type: https://ticketium.example/problems/not-found
+            title: Resource not found
+            status: 404
+            detail: Event '3fa85f64-5717-4562-b3fc-2c963f66afa6' was not found.
+            instance: /api/v1/events/3fa85f64-5717-4562-b3fc-2c963f66afa6
+            traceId: 00-7e8f90a1b2c3d4e57e8f90a1b2c3d4e5-7e8f90a1b2c3d4e5-01
+            resource: event
+
+    PreconditionFailed:
+      description: The resource was modified since the client fetched it (`If-Match` mismatch).
+      headers:
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: https://ticketium.example/problems/precondition-failed
+            title: Resource was modified
+            status: 412
+            detail: The event was changed by someone else. Reload it and apply your changes again.
+            instance: /api/v1/events/3fa85f64-5717-4562-b3fc-2c963f66afa6
+            traceId: 00-8f90a1b2c3d4e5f68f90a1b2c3d4e5f6-8f90a1b2c3d4e5f6-01
+
+    PreconditionRequired:
+      description: The `If-Match` header is required for this operation.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: https://ticketium.example/problems/precondition-required
+            title: Precondition required
+            status: 428
+            detail: Send the event's ETag in the If-Match header.
+            instance: /api/v1/events/3fa85f64-5717-4562-b3fc-2c963f66afa6
+            traceId: 00-90a1b2c3d4e5f60790a1b2c3d4e5f607-90a1b2c3d4e5f607-01
+
+    TooManyRequests:
+      description: Rate limit exceeded.
+      headers:
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: https://ticketium.example/problems/rate-limited
+            title: Too many requests
+            status: 429
+            detail: Rate limit of 10 requests per second exceeded.
+            instance: /api/v1/events/3fa85f64-5717-4562-b3fc-2c963f66afa6/holds
+            traceId: 00-a1b2c3d4e5f60718a1b2c3d4e5f60718-a1b2c3d4e5f60718-01
+
+    InternalError:
+      description: Unexpected server error. No internal details are exposed.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: https://ticketium.example/problems/internal-error
+            title: An unexpected error occurred
+            status: 500
+            detail: Something went wrong on our side. Please try again later and quote the traceId if the problem persists.
+            instance: /api/v1/events
+            traceId: 00-b2c3d4e5f6071829b2c3d4e5f6071829-b2c3d4e5f6071829-01
+
+    ServiceUnavailable:
+      description: A required dependency (database, seat-lock store) is temporarily unavailable.
+      headers:
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: https://ticketium.example/problems/service-unavailable
+            title: Service temporarily unavailable
+            status: 503
+            detail: Seat reservations are temporarily unavailable. Please retry shortly.
+            instance: /api/v1/events/3fa85f64-5717-4562-b3fc-2c963f66afa6/holds
+            traceId: 00-c3d4e5f60718293ac3d4e5f60718293a-c3d4e5f60718293a-01
+
+  schemas:
+    # ------------------------------------------------ RFC 9457 problem details
+    ProblemDetails:
+      type: object
+      description: RFC 9457 Problem Details object, extended with `traceId`.
+      required: [type, title, status]
+      properties:
+        type:
+          type: string
+          format: uri-reference
+          description: Identifies the problem type. Clients branch on this value.
+          example: https://ticketium.example/problems/seat-unavailable
+        title:
+          type: string
+          description: Short, human-readable summary of the problem type. Does not change between occurrences.
+        status:
+          type: integer
+          minimum: 400
+          maximum: 599
+          description: HTTP status code, duplicated for convenience.
+        detail:
+          type: string
+          description: Human-readable explanation specific to this occurrence.
+        instance:
+          type: string
+          format: uri-reference
+          description: Identifies this occurrence (the request path).
+        traceId:
+          type: string
+          description: W3C trace id of the request; quote it when contacting support.
+      additionalProperties: true
+
+    ValidationProblemDetails:
+      allOf:
+        - $ref: '#/components/schemas/ProblemDetails'
+        - type: object
+          required: [errors]
+          properties:
+            errors:
+              type: array
+              description: One entry per invalid value (RFC 9457 §3 example format).
+              items:
+                $ref: '#/components/schemas/ValidationError'
+
+    ValidationError:
+      type: object
+      description: Exactly one of `pointer`, `parameter` or `header` identifies the invalid value.
+      required: [detail]
+      properties:
+        detail:
+          type: string
+        pointer:
+          type: string
+          description: JSON Pointer (RFC 6901) into the request body.
+          example: '#/seats/2'
+        parameter:
+          type: string
+          description: Name of the invalid query or path parameter.
+        header:
+          type: string
+          description: Name of the invalid request header.
+
+    NotFoundProblemDetails:
+      allOf:
+        - $ref: '#/components/schemas/ProblemDetails'
+        - type: object
+          properties:
+            resource:
+              type: string
+              enum: [event, venue, hold, seat]
+
+    BusinessRuleProblemDetails:
+      allOf:
+        - $ref: '#/components/schemas/ProblemDetails'
+        - type: object
+          required: [rule]
+          properties:
+            rule:
+              type: string
+              description: Machine-readable id of the violated rule.
+              enum: [venue-double-booking, capacity-below-sold, capacity-exceeds-venue, price-change-after-sales-start]
+
+    SeatUnavailableProblemDetails:
+      allOf:
+        - $ref: '#/components/schemas/ProblemDetails'
+        - type: object
+          required: [unavailableSeats]
+          properties:
+            unavailableSeats:
+              type: array
+              description: Requested seats that are already held or sold.
+              items:
+                type: string
+              example: [A-12, A-13]
+
+    HoldLimitProblemDetails:
+      allOf:
+        - $ref: '#/components/schemas/ProblemDetails'
+        - type: object
+          required: [limit, current]
+          properties:
+            limit:
+              type: integer
+              description: Maximum seats a buyer may hold for one event.
+            current:
+              type: integer
+              description: Seats the buyer already holds for this event.
+
+    HoldExpiredProblemDetails:
+      allOf:
+        - $ref: '#/components/schemas/ProblemDetails'
+        - type: object
+          required: [expiredAt]
+          properties:
+            expiredAt:
+              type: string
+              format: date-time
+
+    PaymentProblemDetails:
+      allOf:
+        - $ref: '#/components/schemas/ProblemDetails'
+        - type: object
+          required: [holdReleased]
+          properties:
+            holdReleased:
+              type: boolean
+              description: Whether the saga released the held seats.
+            declineCode:
+              type: string
+              description: Gateway decline reason, present for `payment-declined` only.
+              enum: [insufficient_funds, card_declined, expired_card, incorrect_cvc, fraud_suspected, authentication_required]
+
+    # ------------------------------------------------ Domain DTOs
+    SignUpRequest:
+      type: object
+      required: [email, password, role]
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+        password:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 128
+        role:
+          type: string
+          enum: [Buyer, Organizer]
+
+    SignInRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+
+    TokenResponse:
+      type: object
+      required: [accessToken, tokenType, expiresIn]
+      properties:
+        accessToken:
+          type: string
+        tokenType:
+          type: string
+          enum: [Bearer]
+        expiresIn:
+          type: integer
+          description: Lifetime of the token in seconds.
+
+    User:
+      type: object
+      required: [id, email, role]
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        role:
+          type: string
+          enum: [Buyer, Organizer, Admin]
+
+    CreateEventRequest:
+      type: object
+      required: [venueId, title, startsAt, price]
+      properties:
+        venueId:
+          type: string
+          format: uuid
+        title:
+          type: string
+          minLength: 3
+          maxLength: 200
+        startsAt:
+          type: string
+          format: date-time
+          description: Must be in the future.
+        salesCloseAt:
+          type: string
+          format: date-time
+          description: Defaults to `startsAt`. Must not be later than `startsAt`.
+        price:
+          $ref: '#/components/schemas/Money'
+        capacity:
+          type: integer
+          minimum: 1
+          description: Defaults to the venue capacity; must not exceed it.
+
+    UpdateEventRequest:
+      type: object
+      required: [title, startsAt, price, capacity]
+      properties:
+        title:
+          type: string
+          minLength: 3
+          maxLength: 200
+        startsAt:
+          type: string
+          format: date-time
+          description: Must be in the future.
+        salesCloseAt:
+          type: string
+          format: date-time
+          description: Defaults to `startsAt`. Must not be later than `startsAt`.
+        price:
+          $ref: '#/components/schemas/Money'
+        capacity:
+          type: integer
+          minimum: 1
+          description: Must not exceed the venue capacity or be below the number of sold tickets.
+
+    CancelEventRequest:
+      type: object
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          minLength: 3
+          maxLength: 500
+          description: Shown to buyers in the cancellation notice.
+          example: The headliner is ill; the concert will not take place.
+
+    EventCancellation:
+      type: object
+      required: [eventId, cancelledAt, cancelledBy, reason, ticketsToRefund]
+      properties:
+        eventId:
+          type: string
+          format: uuid
+        cancelledAt:
+          type: string
+          format: date-time
+        cancelledBy:
+          type: string
+          format: uuid
+          description: Id of the organizer who cancelled the event.
+        reason:
+          type: string
+        ticketsToRefund:
+          type: integer
+          description: Number of sold tickets whose refund has been started.
+
+    Event:
+      type: object
+      required: [id, venueId, organizerId, title, startsAt, status, price, capacity]
+      properties:
+        id:
+          type: string
+          format: uuid
+        venueId:
+          type: string
+          format: uuid
+        organizerId:
+          type: string
+          format: uuid
+        title:
+          type: string
+        startsAt:
+          type: string
+          format: date-time
+        salesCloseAt:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [OnSale, SoldOut, SalesClosed, Cancelled]
+        price:
+          $ref: '#/components/schemas/Money'
+        capacity:
+          type: integer
+
+    EventDetails:
+      allOf:
+        - $ref: '#/components/schemas/Event'
+        - type: object
+          required: [seatsRemaining, seats]
+          properties:
+            seatsRemaining:
+              type: integer
+            seats:
+              type: array
+              items:
+                $ref: '#/components/schemas/Seat'
+
+    Seat:
+      type: object
+      required: [label, status]
+      properties:
+        label:
+          type: string
+          example: A-12
+        status:
+          type: string
+          enum: [Available, Held, Sold]
+
+    EventPage:
+      type: object
+      required: [items, page, pageSize, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Event'
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        total:
+          type: integer
+
+    CreateHoldRequest:
+      type: object
+      required: [seats]
+      properties:
+        seats:
+          type: array
+          minItems: 1
+          maxItems: 6
+          uniqueItems: true
+          items:
+            type: string
+          example: [A-12, A-13]
+
+    Hold:
+      type: object
+      required: [id, eventId, seats, expiresAt, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+        eventId:
+          type: string
+          format: uuid
+        seats:
+          type: array
+          items:
+            type: string
+        expiresAt:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [Active, Paid, Released, Expired]
+
+    PaymentRequest:
+      type: object
+      required: [paymentToken]
+      properties:
+        paymentToken:
+          type: string
+          description: |
+            Single-use token produced by the payment gateway's client-side SDK.
+            Raw card data never reaches Ticketium (PCI DSS, SRS C-1).
+
+    Transaction:
+      type: object
+      description: Payment for one hold; a single transaction covers all tickets of that hold.
+      required: [id, amount, status, createdAt, tickets]
+      properties:
+        id:
+          type: string
+          format: uuid
+        amount:
+          $ref: '#/components/schemas/Money'
+        status:
+          type: string
+          enum: [Captured, Refunded]
+        createdAt:
+          type: string
+          format: date-time
+        tickets:
+          type: array
+          items:
+            $ref: '#/components/schemas/Ticket'
+
+    Ticket:
+      type: object
+      required: [id, eventId, seatLabel, price, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+        eventId:
+          type: string
+          format: uuid
+        seatLabel:
+          type: string
+        price:
+          $ref: '#/components/schemas/Money'
+        status:
+          type: string
+          enum: [Valid, Refunded, Cancelled]
+
+    TicketPage:
+      type: object
+      required: [items, page, pageSize, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Ticket'
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        total:
+          type: integer
+
+    Money:
+      type: object
+      required: [amount, currency]
+      properties:
+        amount:
+          type: number
+          format: decimal
+          minimum: 0
+          example: 750.00
+        currency:
+          type: string
+          pattern: '^[A-Z]{3}$'
+          example: UAH
+
+security:
+  - bearerAuth: []

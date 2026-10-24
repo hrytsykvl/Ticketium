@@ -72,6 +72,7 @@ resale marketplaces, and physical access-control hardware.
 | Saga    | A sequence of local transactions with compensating actions on failure     |
 | SPA     | Single Page Application                                                    |
 | WS      | WebSocket, a protocol for real-time bidirectional communication           |
+| Problem Details | Standard JSON format for API errors (RFC 9457), see [Error Handling](./ERROR_HANDLING.md) |
 
 ### 1.4 References
 
@@ -80,6 +81,9 @@ resale marketplaces, and physical access-control hardware.
 | SRS Template       | jam01  | https://github.com/jam01/SRS-Template                       | Informative |
 | Project README     | Team   | [../README.md](../README.md)                                | Informative |
 | Architecture Doc   | Team   | [./ARCHITECTURE.md](./ARCHITECTURE.md)                      | Normative   |
+| Error Handling Doc | Team   | [./ERROR_HANDLING.md](./ERROR_HANDLING.md)                  | Normative   |
+| OpenAPI Spec       | Team   | [./openapi.yaml](./openapi.yaml)                            | Normative   |
+| RFC 9457 Problem Details for HTTP APIs | IETF | https://www.rfc-editor.org/rfc/rfc9457 | Normative |
 
 ## 2. Product Overview
 
