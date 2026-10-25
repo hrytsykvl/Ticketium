@@ -83,6 +83,7 @@ resale marketplaces, and physical access-control hardware.
 | Architecture Doc   | Team   | [./ARCHITECTURE.md](./ARCHITECTURE.md)                      | Normative   |
 | Error Handling Doc | Team   | [./ERROR_HANDLING.md](./ERROR_HANDLING.md)                  | Normative   |
 | OpenAPI Spec       | Team   | [./openapi.yaml](./openapi.yaml)                            | Normative   |
+| Concurrency Patterns Doc | Team | [./CONCURRENCY_PATTERNS.md](./CONCURRENCY_PATTERNS.md) | Informative |
 | RFC 9457 Problem Details for HTTP APIs | IETF | https://www.rfc-editor.org/rfc/rfc9457 | Normative |
 
 ## 2. Product Overview

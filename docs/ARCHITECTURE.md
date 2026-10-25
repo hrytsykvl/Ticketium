@@ -174,6 +174,9 @@ sequenceDiagram
 | Circuit Breaker              | Protect against payment-gateway timeouts and failures. |
 | Real-time Streaming          | Push "seats remaining" updates to clients over WebSockets. |
 
+Each pattern is applied in detail, with sequence diagrams, in
+[Concurrency Patterns](./CONCURRENCY_PATTERNS.md).
+
 ## 7. Evolution Path
 
 The modular boundaries allow extracting high-load modules (e.g., Booking) into independent
