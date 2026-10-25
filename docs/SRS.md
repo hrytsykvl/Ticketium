@@ -1,10 +1,10 @@
 # Software Requirements Specification
 ## For Ticketium
 
-Version 0.1
+Version 0.2
 Prepared by Vladyslav Hrytsyk, Oleksandr Kuzmeniuk, Danylo Kozlovskyi
 Team x53AIBoosted
-2026-10-19
+2026-10-25
 
 ## Table of Contents
 
@@ -68,7 +68,7 @@ resale marketplaces, and physical access-control hardware.
 | SRS     | Software Requirements Specification                                        |
 | UI      | User Interface                                                             |
 | JWT     | JSON Web Token used to represent authenticated user claims                 |
-| Hold    | A temporary, time-limited reservation of a seat during checkout           |
+| Hold    | A temporary, time-limited reservation of one or more seats during checkout |
 | Saga    | A sequence of local transactions with compensating actions on failure     |
 | SPA     | Single Page Application                                                    |
 | WS      | WebSocket, a protocol for real-time bidirectional communication           |
@@ -90,9 +90,10 @@ resale marketplaces, and physical access-control hardware.
 
 ### 2.1 Product Perspective
 
-Ticketium is a new, self-contained product. It integrates with one external dependency — a
-payment gateway — accessed through a resilient boundary (timeouts, retries, circuit
-breaker). All other capabilities (identity, catalog, booking) are owned by the product.
+Ticketium is a new, self-contained product. It integrates with two external dependencies: a
+payment gateway, accessed through a resilient boundary (timeouts, retries, circuit
+breaker), and an e-mail service that delivers notifications. All other capabilities
+(identity, catalog, booking) are owned by the product.
 
 ### 2.2 High-level Architecture
 
@@ -116,11 +117,14 @@ graph TD
     Catalog --> DB
     Booking --> DB
     Booking --> Lock[(Cache / Seat-Lock Store)]
+    API --> Notify[Notification Module]
     Payment -->|circuit breaker| Gateway[[External Payment Gateway]]
+    Notify -->|notifications| Mail[[E-mail Service]]
     Booking -->|seats remaining| Web
 ```
 
-The booking flow uses a time-limited **hold** on a seat during checkout and a **saga** that
+The booking flow uses a time-limited **hold** on the selected seats during checkout and a
+**saga** (authorize the payment, confirm the booking, then capture the payment) that
 releases the hold if payment fails, guaranteeing no seat is ever double-sold.
 
 ```mermaid
@@ -131,20 +135,26 @@ sequenceDiagram
     participant Payment
     participant Gateway as Payment Gateway
 
-    Buyer->>API: Select seat
+    Buyer->>API: Select seats
     API->>Booking: Place hold (TTL)
     Booking-->>API: Hold confirmed
+    API-->>Buyer: Hold (expiresAt)
     Buyer->>API: Pay
-    API->>Payment: Charge
-    Payment->>Gateway: Process payment
-    alt Payment success
-        Gateway-->>Payment: OK
-        Payment-->>Booking: Confirm booking
-        Booking-->>API: Ticket issued
+    API->>Payment: Pay for hold
+    Payment->>Gateway: Authorize
+    alt Payment authorized
+        Gateway-->>Payment: Authorized
+        Payment->>Booking: Confirm booking
+        Booking-->>Payment: Tickets issued
+        Payment-->>API: Transaction
+        API-->>Buyer: Tickets
+        Payment->>Gateway: Capture (background)
     else Payment failure / timeout
-        Gateway-->>Payment: Error
-        Payment-->>Booking: Compensate (release hold)
-        Booking-->>API: Seat released
+        Gateway-->>Payment: Declined / error
+        Payment->>Booking: Compensate (release hold)
+        Booking-->>Payment: Seats released
+        Payment-->>API: Payment failed
+        API-->>Buyer: Payment failed, seats released
     end
 ```
 
@@ -157,6 +167,7 @@ sequenceDiagram
 - Payment processing with rollback on failure.
 - Ticket issuance and retrieval.
 - Real-time display of remaining seats.
+- E-mail notifications: purchased tickets to buyers, cancellation notices with refunds.
 
 ### 2.4 Actors and Personas
 
@@ -175,6 +186,7 @@ as payment-gateway outages.
 ### 2.5 Assumptions and Dependencies
 
 - An external payment gateway is available and exposes a charge/refund API.
+- An external e-mail service is available for sending notifications.
 - Users have a modern browser supporting WebSockets.
 - A relational database provides transactional guarantees for booking data.
 
@@ -186,7 +198,7 @@ as payment-gateway outages.
 
 Ticketium is accessed through a responsive Web SPA usable on desktop and mobile browsers.
 Key screens: event catalog/search, event detail with an interactive seat map, checkout
-with a visible hold-expiry countdown, and an "my tickets" area. The UI shall follow a
+with a visible hold-expiry countdown, and a "my tickets" area. The UI shall follow a
 consistent style guide, surface clear error and empty states, and aim for WCAG 2.1 AA
 accessibility. Visual designs are maintained separately and referenced from this SRS.
 
@@ -195,10 +207,11 @@ accessibility. Visual designs are maintained separately and referenced from this
 | Interface | Direction | Description |
 |-----------|-----------|-------------|
 | Ticketium REST API | Provided | JSON/HTTPS API for auth, catalog, booking, and payment operations consumed by the SPA. |
-| WebSocket channel | Provided | Pushes real-time "seats remaining" updates to connected clients. |
+| WebSocket channel | Provided | Pushes real-time "seats remaining" updates to connected clients; the message contract is defined in [Concurrency Patterns S7](./CONCURRENCY_PATTERNS.md#7-s7-real-time-seat-availability-during-a-ticket-drop). |
 | External Payment Gateway | Required | Third-party charge/refund API accessed over HTTPS with defined timeout, retry, and circuit-breaker semantics. |
-| Relational Database | Required | Transactional system of record for users, events, venues, tickets, and transactions. |
-| Cache / Seat-Lock Store | Required | Provides time-limited distributed locks (holds) for seats during checkout. |
+| Relational Database | Required | Transactional system of record for users, events, venues, holds, tickets, and transactions. |
+| Cache / Seat-Lock Store | Required | Provides time-limited distributed locks for the seats of a hold during checkout. |
+| E-mail Service | Required | Delivers ticket and cancellation notifications; delivery failures are retried and never affect booking state. |
 
 Each integration uses authenticated, versioned contracts; the payment gateway boundary
 defines explicit error, timeout, and compensation behavior (see §3.3 and the
@@ -210,18 +223,20 @@ defines explicit error, timeout, and compensation behavior (see §3.3 and the
 |-------|-------------|
 | FR-1  | The system shall allow a user to register an account with email and password. |
 | FR-2  | The system shall authenticate users and issue a JWT on successful login. |
-| FR-3  | The system shall enforce role-based access, distinguishing Organizers from Buyers. |
+| FR-3  | The system shall enforce role-based access, distinguishing Buyers, Organizers and Administrators. Every new account is a Buyer; the Organizer role is granted by an Administrator. |
 | FR-4  | The system shall allow an Organizer to create, edit, and cancel events. |
-| FR-5  | The system shall allow an Organizer to define a venue and its seat layout/capacity. |
+| FR-5  | The system shall allow an Organizer to define a venue and its seat layout/capacity. (Not part of API v1: venues are set up by an Administrator.) |
 | FR-6  | The system shall allow a Buyer to browse and search events by name, date, and venue. |
 | FR-7  | The system shall allow a Buyer to view the seat map and available seats for an event. |
-| FR-8  | The system shall place a time-limited hold on a seat when a Buyer selects it for checkout. |
+| FR-8  | The system shall place a time-limited hold (10 minutes) on the seats a Buyer selects for checkout, up to 6 seats per Buyer per event. |
 | FR-9  | The system shall prevent two Buyers from holding or purchasing the same seat concurrently. |
 | FR-10 | The system shall process payment for held seats through the external payment gateway. |
-| FR-11 | The system shall release a seat hold automatically if payment fails or the hold expires. |
+| FR-11 | The system shall release a seat hold automatically if a payment attempt fails or the hold expires. A payment that could not be attempted (payment temporarily unavailable) keeps the hold until it expires. |
 | FR-12 | The system shall issue a ticket and a transaction record upon successful payment. |
 | FR-13 | The system shall push real-time "seats remaining" updates to connected clients. |
 | FR-14 | The system shall allow a Buyer to view their purchased tickets and order history. |
+| FR-15 | The system shall, when an Organizer cancels an event, release its active holds and refund every sold ticket through the payment gateway. |
+| FR-16 | The system shall e-mail purchased tickets to the Buyer and send a cancellation notice, with the Organizer's reason, to every ticket holder of a cancelled event. |
 
 ### 3.3 Quality of Service
 
@@ -232,7 +247,7 @@ The following non-functional requirements constrain and qualify the functional b
 | ID     | Requirement |
 |--------|-------------|
 | NFR-1  | The system shall serve catalog and seat-availability reads within 300 ms at the 95th percentile under nominal load. |
-| NFR-2  | The system shall handle high-demand ticket drops with controlled queuing and shall scale horizontally to sustain peak booking traffic. |
+| NFR-2  | The system shall handle high-demand ticket drops by shedding excess load in a controlled way (rate limiting, bounded queues, immediate refusal of contended seats) and shall scale horizontally to sustain peak booking traffic. |
 
 #### 3.3.2 Security
 
@@ -269,6 +284,9 @@ The following non-functional requirements constrain and qualify the functional b
 | C-2   | Processing of personal data (accounts, order history) shall comply with GDPR, including consent, data-subject access, and deletion requests. |
 | C-3   | Transaction and ticket records shall be retained per applicable financial record-keeping obligations and be exportable for audit. |
 
+Administrative functions — role management and GDPR data-subject requests — are performed
+by the System Administrator and are not part of the public API v1.
+
 ### 3.5 Design and Implementation
 
 #### 3.5.1 Installation and Deployment
@@ -293,7 +311,8 @@ automated tests before promotion across environments. Dependencies are pinned an
 
 #### 3.5.4 Maintainability
 
-The backend shall preserve clear module boundaries (Identity, Catalog, Booking, Payment) with
+The backend shall preserve clear module boundaries (Identity, Catalog, Booking, Payment,
+Notification) with
 stable internal interfaces, enabling later extraction into independent services without
 changing the public API contract.
 
@@ -304,8 +323,10 @@ changing the public API contract.
 | FR-1 – FR-7, FR-14 | Automated integration tests and manual UI acceptance testing. |
 | FR-8, FR-9, FR-11  | Concurrency tests simulating simultaneous seat selection; assert single winner and correct hold release. |
 | FR-10, FR-12       | End-to-end tests against a payment-gateway sandbox, including success and failure paths. |
+| FR-15, FR-16       | End-to-end tests of event cancellation against the gateway sandbox and an e-mail test inbox, including interrupted and resumed refund runs. |
 | FR-13              | Automated WebSocket tests asserting availability updates propagate to clients. |
 | NFR-6, NFR-7       | Fault-injection and load tests verifying no double-selling and correct circuit-breaker behavior. |
 | NFR-1, NFR-2, NFR-8| Load and soak testing against defined performance and availability targets. |
 | NFR-3, NFR-4, NFR-5| Security review, access-control tests, and automated dependency/secret scanning. |
+| NFR-9              | Usability testing of the checkout flow with representative buyers. |
 | C-1, C-2, C-3      | Compliance audit against PCI DSS / GDPR checklists and retention/export verification. |
