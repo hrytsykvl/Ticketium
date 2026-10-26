@@ -1,10 +1,10 @@
 # Software Requirements Specification
 ## For Ticketium
 
-Version 0.2
+Version 0.1
 Prepared by Vladyslav Hrytsyk, Oleksandr Kuzmeniuk, Danylo Kozlovskyi
 Team x53AIBoosted
-2026-10-25
+2026-10-19
 
 ## Table of Contents
 
