@@ -19,3 +19,4 @@ Ticketium lets organizers create events and set seat capacities, while buyers br
 - [Error Handling](docs/ERROR_HANDLING.md) — RFC 9457 Problem Details design and the [OpenAPI spec](docs/openapi.yaml) of 11 endpoints.
   View the spec in [Swagger Editor](https://editor.swagger.io/?url=https://raw.githubusercontent.com/hrytsykvl/Ticketium/main/docs/openapi.yaml).
 - [Error Scenarios](docs/ERROR_SCENARIOS.md) ([PDF](docs/ERROR_SCENARIOS.pdf)) — request, error response and client reaction for every error of every endpoint.
+- [Concurrency Patterns](docs/CONCURRENCY_PATTERNS.md) — 7 concurrency flows (sequence diagrams) using concurrency and distributed transaction patterns: distributed lock, saga, TCC, outbox, idempotency and more.

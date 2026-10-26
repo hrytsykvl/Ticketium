@@ -1,6 +1,6 @@
 # Ticketium — Error Handling Scenarios
 
-Team x53AIBoosted · Version 0.1 · 2026-10-23
+Team x53AIBoosted · Version 0.2 · 2026-10-25
 
 This document walks through every error response of the 11 Ticketium API endpoints. For each
 endpoint and each error it gives the **situation** that causes the error, an **example request**,
@@ -23,23 +23,24 @@ Conventions used below:
 
 | # | Endpoint | Success | Error codes |
 |---|----------|---------|-------------|
-| 1 | `POST /auth/sign-up` | 201 | 400, 409, 429, 500 |
-| 2 | `POST /auth/sign-in` | 200 | 400, 401, 429, 500 |
-| 3 | `GET /events` | 200 | 400, 429, 500 |
-| 4 | `POST /events` | 201 | 400, 401, 403, 404, 422, 429, 500 |
-| 5 | `GET /events/{eventId}` | 200 | 400, 404, 429, 500 |
-| 6 | `PUT /events/{eventId}` | 200 | 400, 401, 403, 404, 409, 412, 422, 428, 429, 500 |
-| 7 | `POST /events/{eventId}/cancellation` | 201 | 400, 401, 403, 404, 409, 429, 500 |
-| 8 | `POST /events/{eventId}/holds` | 201 | 400, 401, 404, 409, 422, 429, 500, 503 |
-| 9 | `DELETE /holds/{holdId}` | 204 | 401, 404, 409, 429, 500 |
-| 10 | `POST /holds/{holdId}/payment` | 201 | 400, 401, 402, 404, 409, 410, 429, 500, 502, 503, 504 |
-| 11 | `GET /me/tickets` | 200 | 400, 401, 429, 500 |
+| 1 | `POST /auth/sign-up` | 201 | 400, 409, 429, 500, 503 |
+| 2 | `POST /auth/sign-in` | 200 | 400, 401, 429, 500, 503 |
+| 3 | `GET /events` | 200 | 400, 429, 500, 503 |
+| 4 | `POST /events` | 201 | 400, 401, 403, 404, 422, 429, 500, 503 |
+| 5 | `GET /events/{eventId}` | 200 | 400, 404, 429, 500, 503 |
+| 6 | `PUT /events/{eventId}` | 200 | 400, 401, 403, 404, 409, 412, 422, 428, 429, 500, 503 |
+| 7 | `POST /events/{eventId}/cancellation` | 201 | 400, 401, 403, 404, 409, 429, 500, 503 |
+| 8 | `POST /events/{eventId}/holds` | 201 | 400, 401, 403, 404, 409, 422, 429, 500, 503 |
+| 9 | `DELETE /holds/{holdId}` | 204 | 400, 401, 404, 409, 429, 500, 503 |
+| 10 | `POST /holds/{holdId}/payment` | 201 | 400, 401, 402, 403, 404, 409, 410, 429, 500, 502, 503, 504 |
+| 11 | `GET /me/tickets` | 200 | 400, 401, 429, 500, 503 |
 
 ## 2. Errors Common to All Endpoints
 
-`429 Too Many Requests` and `500 Internal Server Error` can be returned by any endpoint. They
-behave the same everywhere, so they are described once here; the endpoint sections show them
-only where the situation is specific (e.g. brute-force protection on sign-in).
+`429 Too Many Requests`, `500 Internal Server Error` and `503 Service Unavailable` can be
+returned by any endpoint. They behave the same everywhere, so they are described once here; the
+endpoint sections show them only where the situation is specific (e.g. brute-force protection
+on sign-in).
 
 ### 2.1 Any endpoint — 429 Too Many Requests
 
@@ -69,9 +70,11 @@ Retry-After: 5
 }
 ```
 
-**Client reaction:** Do not retry immediately. Disable the action that triggered the request,
-show "Too many requests, please wait N seconds" with a countdown taken from `Retry-After`, then
-retry once with exponential backoff and jitter.
+**Client reaction:** Never retry before `Retry-After`. Show "Too many requests, please wait N
+seconds" with a countdown taken from `Retry-After`. Background data reloads like this one are
+then retried automatically with exponential backoff and jitter (at most 3 attempts). User
+actions such as sign-in, holding seats or paying are not retried automatically: the button stays
+disabled until the countdown ends and the user repeats the action (see 4.3 and 10.9).
 
 ### 2.2 Any endpoint — 500 Internal Server Error
 
@@ -103,6 +106,39 @@ Content-Type: application/problem+json
 **Client reaction:** Show a generic error message together with the `traceId` so the user can
 report it. Offer a "Try again" button; do not retry automatically more than once.
 
+### 2.3 Any endpoint — 503 Service Unavailable
+
+**Situation:** The database is briefly unreachable (e.g. during a failover), so the request cannot be
+served. Holding seats and paying have their own `503` cases (see 10.10 and 12.12).
+
+**Request:**
+
+```http
+GET /api/v1/events?q=jazz HTTP/1.1
+```
+
+**Response:**
+
+```http
+HTTP/1.1 503 Service Unavailable
+Content-Type: application/problem+json
+Retry-After: 5
+
+{
+  "type": "https://ticketium.example/problems/service-unavailable",
+  "title": "Service temporarily unavailable",
+  "status": 503,
+  "detail": "The service is temporarily unavailable. Please retry shortly.",
+  "instance": "/api/v1/events",
+  "traceId": "00-2a3b4c5d…-01"
+}
+```
+
+**Client reaction:** Wait `Retry-After` seconds, then retry with exponential backoff and jitter
+(at most 3 attempts). Background reads retry silently; for user actions show "Service is
+temporarily unavailable, retrying…" and keep the entered data. After the last attempt ask the
+user to try again later.
+
 ## 3. `POST /auth/sign-up`
 
 ### 3.1 400 Bad Request
@@ -116,7 +152,7 @@ report it. Offer a "Try again" button; do not retry automatically more than once
 POST /api/v1/auth/sign-up HTTP/1.1
 Content-Type: application/json
 
-{ "email": "maksym@", "password": "1234", "role": "Buyer" }
+{ "email": "maksym@", "password": "1234" }
 ```
 
 **Response:**
@@ -152,7 +188,7 @@ the messages under them. Keep the entered values. Do not resend until the user c
 POST /api/v1/auth/sign-up HTTP/1.1
 Content-Type: application/json
 
-{ "email": "maksym@example.com", "password": "S3cure-pass", "role": "Buyer" }
+{ "email": "maksym@example.com", "password": "S3cure-pass" }
 ```
 
 **Response:**
@@ -173,6 +209,8 @@ Content-Type: application/problem+json
 
 **Client reaction:** Show the message under the email field with links "Sign in instead" and
 "Forgot password?". Pre-fill the email on the sign-in page if the user follows the link.
+
+*429, 500 and 503 — see §2.*
 
 ## 4. `POST /auth/sign-in`
 
@@ -279,6 +317,8 @@ Retry-After: 300
 **Client reaction:** Disable the "Sign in" button and show a countdown based on `Retry-After`.
 Offer the "Forgot password?" link.
 
+*500 and 503 — see §2.*
+
 ## 5. `GET /events`
 
 ### 5.1 400 Bad Request
@@ -302,7 +342,7 @@ Content-Type: application/problem+json
   "type": "https://ticketium.example/problems/validation-error",
   "title": "One or more validation errors occurred",
   "status": 400,
-  "detail": "The request query contains 2 invalid parameters.",
+  "detail": "The request contains 2 invalid values.",
   "instance": "/api/v1/events",
   "traceId": "00-8a7b6c5d…-01",
   "errors": [
@@ -315,7 +355,7 @@ Content-Type: application/problem+json
 **Client reaction:** Highlight the date filter and show the message next to it. Reset `pageSize`
 to the default value and keep the other filters.
 
-*429 and 500 — see §2.*
+*429, 500 and 503 — see §2.*
 
 ## 6. `POST /events`
 
@@ -443,8 +483,9 @@ the "New event" button for buyers, so this case also indicates a UI bug and is l
 
 ### 6.4 404 Not Found
 
-**Situation:** The selected venue was deleted by an administrator while the organizer was filling
-in the form.
+**Situation:** The venue id sent by the form does not exist, e.g. the organizer used an outdated
+venue id. Venues are set up by an administrator and are not managed through this API version,
+so the organizer can only use another existing venue.
 
 **Request:**
 
@@ -478,8 +519,8 @@ Content-Type: application/problem+json
 }
 ```
 
-**Client reaction:** Because `resource` is `venue`, reload the venue list, clear the venue
-selector and ask the organizer to choose another venue. Keep the other fields.
+**Client reaction:** Because `resource` is `venue`, clear the venue field and show "This venue
+does not exist — use another venue or contact support". Keep the other fields.
 
 ### 6.5 422 Unprocessable Content
 
@@ -519,6 +560,8 @@ Content-Type: application/problem+json
 
 **Client reaction:** Use `rule` to highlight the venue and start-time fields together and show
 the `detail`. Suggest picking another time or venue.
+
+*429, 500 and 503 — see §2.*
 
 ## 7. `GET /events/{eventId}`
 
@@ -584,7 +627,7 @@ Content-Type: application/problem+json
 **Client reaction:** Show "This event is no longer available" and redirect to the catalogue.
 Cancelled events are **not** 404 — they are returned with status `Cancelled`.
 
-*429 and 500 — see §2.*
+*429, 500 and 503 — see §2.*
 
 ## 8. `PUT /events/{eventId}`
 
@@ -604,8 +647,7 @@ Content-Type: application/json
   "title": "New Year Jazz Night",
   "startsAt": "2026-12-31T19:00:00Z",
   "salesCloseAt": "2026-12-31T21:00:00Z",
-  "price": { "amount": 750.00, "currency": "UAH" },
-  "capacity": 300
+  "price": { "amount": 750.00, "currency": "UAH" }
 }
 ```
 
@@ -645,8 +687,7 @@ Content-Type: application/json
 {
   "title": "New Year Jazz Night",
   "startsAt": "2026-12-31T19:00:00Z",
-  "price": { "amount": 800.00, "currency": "UAH" },
-  "capacity": 300
+  "price": { "amount": 800.00, "currency": "UAH" }
 }
 ```
 
@@ -685,8 +726,7 @@ Content-Type: application/json
 {
   "title": "Renamed Event",
   "startsAt": "2026-12-31T19:00:00Z",
-  "price": { "amount": 750.00, "currency": "UAH" },
-  "capacity": 300
+  "price": { "amount": 750.00, "currency": "UAH" }
 }
 ```
 
@@ -725,8 +765,7 @@ Content-Type: application/json
 {
   "title": "New Year Jazz Night",
   "startsAt": "2026-12-31T19:00:00Z",
-  "price": { "amount": 750.00, "currency": "UAH" },
-  "capacity": 300
+  "price": { "amount": 750.00, "currency": "UAH" }
 }
 ```
 
@@ -765,8 +804,7 @@ Content-Type: application/json
 {
   "title": "New Year Jazz Night",
   "startsAt": "2027-01-15T19:00:00Z",
-  "price": { "amount": 750.00, "currency": "UAH" },
-  "capacity": 300
+  "price": { "amount": 750.00, "currency": "UAH" }
 }
 ```
 
@@ -791,8 +829,9 @@ badge. Suggest creating a new event instead.
 
 ### 8.6 412 Precondition Failed
 
-**Situation:** Two people from the organizer's team edit the same event. The first one saves
-successfully and the event version becomes `"8"`; the second one still sends `If-Match: "7"`.
+**Situation:** The organizer edits the same event in two browser tabs (or on a laptop and a
+phone). The first save succeeds and the event version becomes `"8"`; the second one still sends
+`If-Match: "7"`.
 
 **Request:**
 
@@ -805,8 +844,7 @@ Content-Type: application/json
 {
   "title": "New Year Jazz Night",
   "startsAt": "2026-12-31T19:00:00Z",
-  "price": { "amount": 700.00, "currency": "UAH" },
-  "capacity": 300
+  "price": { "amount": 700.00, "currency": "UAH" }
 }
 ```
 
@@ -827,12 +865,13 @@ ETag: "8"
 }
 ```
 
-**Client reaction:** Fetch the latest version, show what changed next to the user's own edits and
-let the user re-apply them. Never overwrite silently.
+**Client reaction:** Fetch the latest version, show what changed next to the organizer's own edits
+and let them re-apply their changes. Never overwrite silently.
 
 ### 8.7 422 Unprocessable Content
 
-**Situation:** The organizer reduces the capacity below the number of tickets already sold.
+**Situation:** The organizer tries to raise the price after ticket sales have opened; buyers who
+already paid would have paid a different price.
 
 **Request:**
 
@@ -845,8 +884,7 @@ Content-Type: application/json
 {
   "title": "New Year Jazz Night",
   "startsAt": "2026-12-31T19:00:00Z",
-  "price": { "amount": 750.00, "currency": "UAH" },
-  "capacity": 100
+  "price": { "amount": 900.00, "currency": "UAH" }
 }
 ```
 
@@ -860,15 +898,16 @@ Content-Type: application/problem+json
   "type": "https://ticketium.example/problems/business-rule-violation",
   "title": "Business rule violated",
   "status": 422,
-  "detail": "Capacity cannot be reduced to 100 because 142 tickets are already sold.",
+  "detail": "The price cannot be changed after ticket sales opened at 2026-11-01T10:00:00Z.",
   "instance": "/api/v1/events/3fa85f64-5717-4562-b3fc-2c963f66afa6",
   "traceId": "00-7e8f90a1…-01",
-  "rule": "capacity-below-sold"
+  "rule": "price-change-after-sales-open"
 }
 ```
 
-**Client reaction:** Highlight the capacity field, show the `detail` and set the field's minimum
-to the number of sold tickets.
+**Client reaction:** Because `rule` is `price-change-after-sales-open`, restore the current price in
+the form, highlight the price field and show the `detail`. The organizer can save the other
+edits.
 
 ### 8.8 428 Precondition Required
 
@@ -884,8 +923,7 @@ Content-Type: application/json
 {
   "title": "New Year Jazz Night",
   "startsAt": "2026-12-31T19:00:00Z",
-  "price": { "amount": 750.00, "currency": "UAH" },
-  "capacity": 300
+  "price": { "amount": 750.00, "currency": "UAH" }
 }
 ```
 
@@ -907,6 +945,8 @@ Content-Type: application/problem+json
 
 **Client reaction:** This is a client bug. The SPA reads the `ETag` from `GET /events/{eventId}`
 and always sends it; the error is logged and the user sees a generic error.
+
+*429, 500 and 503 — see §2.*
 
 ## 9. `POST /events/{eventId}/cancellation`
 
@@ -1049,8 +1089,8 @@ longer exists".
 
 ### 9.5 409 Conflict — event already cancelled
 
-**Situation:** The organizer double-clicks "Cancel event", or a co-organizer already cancelled it
-from another device.
+**Situation:** The organizer double-clicks "Cancel event", or already cancelled it from another
+device.
 
 **Request:**
 
@@ -1113,6 +1153,8 @@ Content-Type: application/problem+json
 
 **Client reaction:** Show the `detail` and hide the "Cancel event" button for this event. Refunds
 after the start are handled by support.
+
+*429, 500 and 503 — see §2.*
 
 ## 10. `POST /events/{eventId}/holds`
 
@@ -1183,9 +1225,43 @@ WWW-Authenticate: Bearer
 ```
 
 **Client reaction:** Remember the selected seats, redirect to sign-in, then return to the seat map
-and retry the hold. If some seats were taken meanwhile, the retry returns `409` (see 10.4).
+and retry the hold. If some seats were taken meanwhile, the retry returns `409` (see 10.6).
 
-### 10.3 404 Not Found
+### 10.3 403 Forbidden
+
+**Situation:** A signed-in organizer opens an event page and tries to hold seats; only buyers can
+hold seats.
+
+**Request:**
+
+```http
+POST /api/v1/events/3fa85f64-5717-4562-b3fc-2c963f66afa6/holds HTTP/1.1
+Authorization: Bearer <organizer_token>
+Content-Type: application/json
+
+{ "seats": ["A-12"] }
+```
+
+**Response:**
+
+```http
+HTTP/1.1 403 Forbidden
+Content-Type: application/problem+json
+
+{
+  "type": "https://ticketium.example/problems/forbidden",
+  "title": "Access denied",
+  "status": 403,
+  "detail": "Only users with the 'Buyer' role can hold seats.",
+  "instance": "/api/v1/events/3fa85f64-5717-4562-b3fc-2c963f66afa6/holds",
+  "traceId": "00-e6f70819…-01"
+}
+```
+
+**Client reaction:** Show "Holding seats requires a buyer account". The SPA hides the "Checkout"
+button for organizers, so this case also indicates a UI bug and is logged.
+
+### 10.4 404 Not Found — event does not exist
 
 **Situation:** The event id in the request does not exist.
 
@@ -1218,11 +1294,47 @@ Content-Type: application/problem+json
 
 **Client reaction:** Show "This event is no longer available" and redirect to the catalogue.
 
-### 10.4 409 Conflict — seat unavailable
+### 10.5 404 Not Found — seat does not exist
 
-**Situation:** Two buyers select seat A-12 at the same moment. The first buyer acquires the
-seat lock in the seat-lock store; the second buyer's lock on A-12 is denied, so any locks already
-taken for the second buyer's other seats are released and none of them are held (all-or-nothing).
+**Situation:** The request contains a seat label that is not part of the event's seat map, e.g. a
+hand-crafted request or a client bug that sent a label from another event's seat map.
+
+**Request:**
+
+```http
+POST /api/v1/events/3fa85f64-5717-4562-b3fc-2c963f66afa6/holds HTTP/1.1
+Authorization: Bearer <buyer_token>
+Content-Type: application/json
+
+{ "seats": ["A-12", "Z-99"] }
+```
+
+**Response:**
+
+```http
+HTTP/1.1 404 Not Found
+Content-Type: application/problem+json
+
+{
+  "type": "https://ticketium.example/problems/not-found",
+  "title": "Resource not found",
+  "status": 404,
+  "detail": "Seat 'Z-99' does not exist for this event.",
+  "instance": "/api/v1/events/3fa85f64-5717-4562-b3fc-2c963f66afa6/holds",
+  "traceId": "00-718293a4…-01",
+  "resource": "seat"
+}
+```
+
+**Client reaction:** Because `resource` is `seat`, reload the seat map, drop the unknown seats
+from the selection and let the buyer check the selection before holding again. No seat was held.
+
+### 10.6 409 Conflict — seat unavailable
+
+**Situation:** Two buyers select seat A-12 at the same moment. The first buyer's request locks
+its seats in the seat-lock store. The second buyer's request checks all of its seats in one
+atomic operation, finds A-12 taken and locks none of them, so A-13 stays free as well
+(all-or-nothing).
 
 **Request:**
 
@@ -1255,10 +1367,11 @@ Content-Type: application/problem+json
 other selected seats (A-13) selected, show "Seat A-12 was just taken — please choose another
 one" and refresh availability.
 
-### 10.5 409 Conflict — event not on sale
+### 10.7 409 Conflict — event not on sale
 
 **Situation:** The buyer had the seat map open, but ticket sales closed (or the event was
-cancelled or sold out) before they clicked "Checkout".
+cancelled or sold out) before they clicked "Checkout". The status is re-checked when the hold is
+stored, so a hold can never be created for a cancelled event.
 
 **Request:**
 
@@ -1289,10 +1402,12 @@ Content-Type: application/problem+json
 **Client reaction:** Reload the event, disable the seat map and show the `detail` with the event's
 new status ("Sales closed", "Sold out" or "Cancelled").
 
-### 10.6 422 Unprocessable Content
+### 10.8 422 Unprocessable Content
 
 **Situation:** The buyer already holds 4 seats for this event in another browser tab and now tries
-to hold 3 more; the limit is 6 seats per buyer per event.
+to hold 3 more; the limit is 6 seats per buyer per event. The limit is checked in the same atomic
+operation that locks the seats, so it also holds when both tabs send their requests at the same
+moment.
 
 **Request:**
 
@@ -1323,9 +1438,10 @@ Content-Type: application/problem+json
 ```
 
 **Client reaction:** Show "You can select at most 2 more seats" (computed as `limit - current`) and
-offer a link to the existing checkout.
+offer to continue the existing checkout, which the SPA keeps in local storage shared by all
+tabs.
 
-### 10.7 429 Too Many Requests
+### 10.9 429 Too Many Requests
 
 **Situation:** A scalping bot sends dozens of hold requests per second at a ticket drop.
 
@@ -1359,10 +1475,11 @@ Retry-After: 10
 **Client reaction:** For a real user, disable the "Checkout" button for `Retry-After` seconds and
 show a countdown. Requests are not retried automatically.
 
-### 10.8 503 Service Unavailable
+### 10.10 503 Service Unavailable
 
 **Situation:** The seat-lock store is unreachable during a ticket drop, so seat locks cannot be
-acquired. The API fails closed: it never falls back to booking without a lock.
+acquired. The API fails closed: it never falls back to booking without a lock (the database
+being unreachable is reported the same way, see 2.3).
 
 **Request:**
 
@@ -1398,7 +1515,40 @@ Retry-After: 3
 
 ## 11. `DELETE /holds/{holdId}`
 
-### 11.1 401 Unauthorized
+### 11.1 400 Bad Request
+
+**Situation:** A truncated hold id is sent, e.g. from a corrupted entry in the browser's local storage.
+
+**Request:**
+
+```http
+DELETE /api/v1/holds/9b2e6f1a-4c3d HTTP/1.1
+Authorization: Bearer <buyer_token>
+```
+
+**Response:**
+
+```http
+HTTP/1.1 400 Bad Request
+Content-Type: application/problem+json
+
+{
+  "type": "https://ticketium.example/problems/validation-error",
+  "title": "One or more validation errors occurred",
+  "status": 400,
+  "detail": "The request contains 1 invalid value.",
+  "instance": "/api/v1/holds/9b2e6f1a-4c3d",
+  "traceId": "00-f708192a…-01",
+  "errors": [
+    { "parameter": "holdId", "detail": "Must be a valid UUID." }
+  ]
+}
+```
+
+**Client reaction:** Client bug: log it, clear the local checkout state and return to the seat map.
+The hold, if any, expires by itself.
+
+### 11.2 401 Unauthorized
 
 **Situation:** The buyer clicks "Cancel checkout" after the session expired.
 
@@ -1429,7 +1579,7 @@ WWW-Authenticate: Bearer error="invalid_token", error_description="The access to
 **Client reaction:** Leave the checkout page and redirect to sign-in. No retry is needed: the hold
 will expire by itself at `expiresAt`.
 
-### 11.2 404 Not Found
+### 11.3 404 Not Found
 
 **Situation:** The hold id is unknown, or it belongs to another user. Both cases return `404`
 so that hold ids of other buyers cannot be discovered.
@@ -1461,7 +1611,7 @@ Content-Type: application/problem+json
 **Client reaction:** Treat it as already released: clear the local checkout state and return to
 the seat map.
 
-### 11.3 409 Conflict
+### 11.4 409 Conflict
 
 **Situation:** The buyer paid in one browser tab and then clicks "Cancel checkout" in another.
 
@@ -1490,7 +1640,7 @@ Content-Type: application/problem+json
 
 **Client reaction:** Show "These seats are already paid" and redirect to "My tickets".
 
-*429 and 500 — see §2.*
+*429, 500 and 503 — see §2.*
 
 ## 12. `POST /holds/{holdId}/payment`
 
@@ -1606,9 +1756,46 @@ Content-Type: application/problem+json
 card"). Because `holdReleased` is `true`, stop the countdown and return to the seat map with the
 previous selection pre-selected so the buyer can hold the seats again.
 
-### 12.4 404 Not Found
+### 12.4 403 Forbidden
 
-**Situation:** The hold id is unknown or belongs to another user.
+**Situation:** An organizer account sends a payment request (a hand-crafted request); only buyers can
+pay for holds.
+
+**Request:**
+
+```http
+POST /api/v1/holds/9b2e6f1a-4c3d-4e5f-8a7b-6c5d4e3f2a1b/payment HTTP/1.1
+Authorization: Bearer <organizer_token>
+Idempotency-Key: 5f0c7b2e-8d1a-4c3b-9e2f-1a2b3c4d5e6f
+Content-Type: application/json
+
+{ "paymentToken": "tok_1QxYz2Ab" }
+```
+
+**Response:**
+
+```http
+HTTP/1.1 403 Forbidden
+Content-Type: application/problem+json
+
+{
+  "type": "https://ticketium.example/problems/forbidden",
+  "title": "Access denied",
+  "status": 403,
+  "detail": "Only users with the 'Buyer' role can pay for holds.",
+  "instance": "/api/v1/holds/9b2e6f1a-4c3d-4e5f-8a7b-6c5d4e3f2a1b/payment",
+  "traceId": "00-08192a3b…-01"
+}
+```
+
+**Client reaction:** Show "Paying requires a buyer account" and log the case; the SPA never offers
+checkout to organizers.
+
+### 12.5 404 Not Found
+
+**Situation:** The hold id is unknown, belongs to another user, or the buyer released the hold
+("Cancel checkout" in another tab) before paying here. A released hold no longer exists for the
+API.
 
 **Request:**
 
@@ -1641,7 +1828,7 @@ Content-Type: application/problem+json
 **Client reaction:** Clear the checkout state and return to the seat map with "Your reservation
 was not found — please select seats again".
 
-### 12.5 409 Conflict — hold already paid
+### 12.6 409 Conflict — hold already paid
 
 **Situation:** The buyer paid on a phone and then presses "Pay" again on a laptop (a new click,
 so a new `Idempotency-Key`).
@@ -1676,7 +1863,7 @@ Content-Type: application/problem+json
 **Client reaction:** Show a success-style message "Already paid" and redirect to "My tickets". No
 second charge happened.
 
-### 12.6 409 Conflict — idempotency key reused
+### 12.7 409 Conflict — idempotency key reused
 
 **Situation:** Because of a client bug, the same `Idempotency-Key` is sent with a different
 payment token.
@@ -1702,7 +1889,7 @@ Content-Type: application/problem+json
   "type": "https://ticketium.example/problems/idempotency-key-reused",
   "title": "Idempotency key reused with a different request",
   "status": 409,
-  "detail": "Key '5f0c7b2e-8d1a-4c3b-9e2f-1a2b3c4d5e6f' was already used with a different request body.",
+  "detail": "Key '5f0c7b2e-8d1a-4c3b-9e2f-1a2b3c4d5e6f' was already used with a different request.",
   "instance": "/api/v1/holds/9b2e6f1a-4c3d-4e5f-8a7b-6c5d4e3f2a1b/payment",
   "traceId": "00-f6071829…-02"
 }
@@ -1711,7 +1898,7 @@ Content-Type: application/problem+json
 **Client reaction:** Log the bug. Generate a new `Idempotency-Key` and ask the user to press "Pay"
 again.
 
-### 12.7 409 Conflict — request in progress
+### 12.8 409 Conflict — request in progress
 
 **Situation:** The buyer double-clicks "Pay". The second request with the same `Idempotency-Key`
 arrives while the first one is still waiting for the payment gateway.
@@ -1746,7 +1933,44 @@ Content-Type: application/problem+json
 **Client reaction:** Ignore this response and wait for the result of the first request. Keep the
 "Pay" button disabled with a spinner until then.
 
-### 12.8 410 Gone
+### 12.9 409 Conflict — event cancelled
+
+**Situation:** The organizer cancels the event while the buyer is entering card details. The
+cancellation released the hold, so the payment is refused before anything is authorized. If
+the cancellation lands while the amount is being authorized, the authorization is voided and
+the same response is returned.
+
+**Request:**
+
+```http
+POST /api/v1/holds/9b2e6f1a-4c3d-4e5f-8a7b-6c5d4e3f2a1b/payment HTTP/1.1
+Authorization: Bearer <buyer_token>
+Idempotency-Key: 5f0c7b2e-8d1a-4c3b-9e2f-1a2b3c4d5e6f
+Content-Type: application/json
+
+{ "paymentToken": "tok_1QxYz2Ab" }
+```
+
+**Response:**
+
+```http
+HTTP/1.1 409 Conflict
+Content-Type: application/problem+json
+
+{
+  "type": "https://ticketium.example/problems/event-not-on-sale",
+  "title": "Event is not on sale",
+  "status": 409,
+  "detail": "The event was cancelled; your hold was released and you were not charged.",
+  "instance": "/api/v1/holds/9b2e6f1a-4c3d-4e5f-8a7b-6c5d4e3f2a1b/payment",
+  "traceId": "00-192a3b4c…-01"
+}
+```
+
+**Client reaction:** Stop the countdown, reload the event and show it as cancelled together with the
+organizer's reason. Do not offer to pay again.
+
+### 12.10 410 Gone
 
 **Situation:** The buyer took longer than the hold time (e.g. 10 minutes) to enter card details.
 The hold expired and the seats went back on sale.
@@ -1775,17 +1999,19 @@ Content-Type: application/problem+json
   "detail": "The hold expired at 2026-10-23T14:10:00Z; please select seats again.",
   "instance": "/api/v1/holds/9b2e6f1a-4c3d-4e5f-8a7b-6c5d4e3f2a1b/payment",
   "traceId": "00-18293a4b…-02",
-  "expiredAt": "2026-10-23T14:10:00Z"
+  "expiredAt": "2026-10-23T14:10:00Z",
+  "holdReleased": true
 }
 ```
 
 **Client reaction:** Show "Your reservation expired" and return to the seat map with the previous
 seats pre-selected, so the buyer can try to hold them again. The buyer was not charged.
 
-### 12.9 502 Bad Gateway
+### 12.11 502 Bad Gateway
 
-**Situation:** The payment gateway returns a malformed response or an internal error. The charge
-is treated as failed, any authorization is voided, and the hold is released.
+**Situation:** The payment gateway returns a malformed response or an internal error, even after
+retries. The outcome is uncertain, so any pending authorization is voided and the hold is
+released.
 
 **Request:**
 
@@ -1808,19 +2034,21 @@ Content-Type: application/problem+json
   "type": "https://ticketium.example/problems/payment-gateway-error",
   "title": "Payment provider error",
   "status": 502,
-  "detail": "The payment provider returned an unexpected response. You were not charged.",
+  "detail": "The payment provider returned an unexpected response. Any pending authorization will be voided.",
   "instance": "/api/v1/holds/9b2e6f1a-4c3d-4e5f-8a7b-6c5d4e3f2a1b/payment",
   "traceId": "00-293a4b5c…-02",
   "holdReleased": true
 }
 ```
 
-**Client reaction:** Show "Payment provider error, you were not charged" with the `traceId`.
-Because `holdReleased` is `true`, return to the seat map with the previous selection.
+**Client reaction:** Show "Payment provider error. If an amount was reserved on your card, it will
+be released automatically", with the `traceId`. Because `holdReleased` is `true`, return to the
+seat map with the previous selection.
 
-### 12.10 503 Service Unavailable
+### 12.12 503 Service Unavailable
 
-**Situation:** The payment gateway has been failing, so the circuit breaker is open. No charge is
+**Situation:** The payment gateway has been failing, so the circuit breaker is open (the same
+response is returned when all payment slots of the instance are busy). No authorization is
 attempted and the hold is **kept** until it expires.
 
 **Request:**
@@ -1854,13 +2082,14 @@ Retry-After: 30
 
 **Client reaction:** Stay on the checkout page; the countdown keeps running. Show "Payments are
 temporarily unavailable, retrying in 30 s" and retry automatically after `Retry-After` with the
-**same** `Idempotency-Key` while the hold is still active.
+**same** `Idempotency-Key` while the hold is still active (at most 3 attempts). A `503` is not
+stored for the key, so the retry is processed again instead of replaying this response.
 
-### 12.11 504 Gateway Timeout
+### 12.13 504 Gateway Timeout
 
 **Situation:** The payment gateway does not answer within the timeout, even after retries. The
 outcome is unknown, so the payment module voids any pending authorization and releases the hold;
-a reconciliation job refunds any charge that is later found without a ticket.
+a reconciliation job voids any authorization that is later found without a ticket.
 
 **Request:**
 
@@ -1890,11 +2119,11 @@ Content-Type: application/problem+json
 }
 ```
 
-**Client reaction:** Show "The payment could not be confirmed. If your card was charged, the
-amount will be returned automatically", with the `traceId`. Return to the seat map with the
+**Client reaction:** Show "The payment could not be confirmed. If an amount was reserved on your
+card, it will be released automatically", with the `traceId`. Return to the seat map with the
 previous selection.
 
-*429 and 500 — see §2.*
+*429, 500 and 503 service-unavailable — see §2.*
 
 ## 13. `GET /me/tickets`
 
@@ -1919,7 +2148,7 @@ Content-Type: application/problem+json
   "type": "https://ticketium.example/problems/validation-error",
   "title": "One or more validation errors occurred",
   "status": 400,
-  "detail": "The request query contains 1 invalid parameter.",
+  "detail": "The request contains 1 invalid value.",
   "instance": "/api/v1/me/tickets",
   "traceId": "00-5c6d7e8f…-02",
   "errors": [
@@ -1961,4 +2190,4 @@ WWW-Authenticate: Bearer error="invalid_token", error_description="The access to
 **Client reaction:** Remove the expired token, redirect to sign-in and return to "My tickets"
 after a successful sign-in.
 
-*429 and 500 — see §2.*
+*429, 500 and 503 — see §2.*

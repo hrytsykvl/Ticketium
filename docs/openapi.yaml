@@ -19,6 +19,13 @@ info:
     - `detail` explains this specific occurrence and must not be parsed.
     - `instance` is the request path; `traceId` correlates the response with server logs.
     - `Retry-After` is sent for `429` and `503` responses.
+    - `429 rate-limited`, `500 internal-error` and `503 service-unavailable` (database or
+      seat-lock store unreachable) can be returned by every endpoint.
+
+    Scope: venue management (SRS FR-5) and administration (role management, GDPR
+    data-subject requests) are not part of this API version. Venues are set up by an
+    administrator and referenced by id when an event is created. Every new account is a
+    Buyer; the Organizer role is granted by an administrator.
   contact:
     name: Team x53AIBoosted
 
@@ -32,13 +39,13 @@ tags:
   - name: Identity
     description: Sign up and sign in (FR-1, FR-2)
   - name: Catalog
-    description: Events browsing and management (FR-4 – FR-7)
+    description: Events browsing and management (FR-4, FR-6, FR-7)
   - name: Booking
     description: Seat holds (FR-8, FR-9, FR-11)
   - name: Payment
     description: Checkout and ticket issuance (FR-10 – FR-12)
   - name: Tickets
-    description: Buyer's purchased tickets (FR-14)
+    description: Buyer's purchased tickets and order history (FR-14)
 
 paths:
   # ---------------------------------------------------------------- Identity
@@ -56,10 +63,7 @@ paths:
               $ref: '#/components/schemas/SignUpRequest'
       responses:
         '201':
-          description: Account created.
-          headers:
-            Location:
-              $ref: '#/components/headers/Location'
+          description: Account created with the `Buyer` role.
           content:
             application/json:
               schema:
@@ -83,6 +87,8 @@ paths:
           $ref: '#/components/responses/TooManyRequests'
         '500':
           $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
 
   /auth/sign-in:
     post:
@@ -124,6 +130,8 @@ paths:
           $ref: '#/components/responses/TooManyRequests'
         '500':
           $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
 
   # ---------------------------------------------------------------- Catalog
   /events:
@@ -186,7 +194,7 @@ paths:
                 type: https://ticketium.example/problems/validation-error
                 title: One or more validation errors occurred
                 status: 400
-                detail: The request query contains 2 invalid parameters.
+                detail: The request contains 2 invalid values.
                 instance: /api/v1/events
                 traceId: 00-8a7b6c5d4e3f201918a7b6c5d4e3f201-9a8b7c6d5e4f3021-01
                 errors:
@@ -198,6 +206,8 @@ paths:
           $ref: '#/components/responses/TooManyRequests'
         '500':
           $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
 
     post:
       tags: [Catalog]
@@ -270,6 +280,8 @@ paths:
           $ref: '#/components/responses/TooManyRequests'
         '500':
           $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
 
   /events/{eventId}:
     parameters:
@@ -297,6 +309,8 @@ paths:
           $ref: '#/components/responses/TooManyRequests'
         '500':
           $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
 
     put:
       tags: [Catalog]
@@ -370,16 +384,18 @@ paths:
                 type: https://ticketium.example/problems/business-rule-violation
                 title: Business rule violated
                 status: 422
-                detail: Capacity cannot be reduced to 100 because 142 tickets are already sold.
+                detail: The price cannot be changed after ticket sales opened at 2026-11-01T10:00:00Z.
                 instance: /api/v1/events/3fa85f64-5717-4562-b3fc-2c963f66afa6
                 traceId: 00-7e8f90a1b2c3d4e57e8f90a1b2c3d4e5-7e8f90a1b2c3d4e5-01
-                rule: capacity-below-sold
+                rule: price-change-after-sales-open
         '428':
           $ref: '#/components/responses/PreconditionRequired'
         '429':
           $ref: '#/components/responses/TooManyRequests'
         '500':
           $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
 
   /events/{eventId}/cancellation:
     parameters:
@@ -390,7 +406,8 @@ paths:
       summary: Cancel an event (owning Organizer)
       description: |
         Cancels the event instead of deleting it: the event stays visible with status
-        `Cancelled`, active holds are released, and refunds for sold tickets are started
+        `Cancelled` (and its `cancelledAt` and `cancellationReason`), active holds are
+        released, buyers are notified by e-mail, and refunds for sold tickets are started
         asynchronously. Ticket and transaction records are kept for audit (SRS C-3).
       requestBody:
         required: true
@@ -400,10 +417,7 @@ paths:
               $ref: '#/components/schemas/CancelEventRequest'
       responses:
         '201':
-          description: Event cancelled; refunds started.
-          headers:
-            Location:
-              $ref: '#/components/headers/Location'
+          description: Event cancelled; buyer notifications and refunds started.
           content:
             application/json:
               schema:
@@ -456,6 +470,8 @@ paths:
           $ref: '#/components/responses/TooManyRequests'
         '500':
           $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
 
   # ---------------------------------------------------------------- Booking
   /events/{eventId}/holds:
@@ -464,11 +480,16 @@ paths:
     post:
       tags: [Booking]
       operationId: createHold
-      summary: Hold seats for checkout
+      summary: Hold seats for checkout (Buyer)
       description: |
         Atomically acquires time-limited locks for all requested seats (all-or-nothing).
         If any seat is already held or sold, no seat is held and `409 seat-unavailable`
         is returned listing the conflicting seats.
+
+        The limit of 6 held seats per buyer per event is checked in the same atomic
+        operation, so parallel hold requests of one buyer cannot exceed it together.
+        The hold is stored only if the event is still on sale at that moment, so a hold
+        cannot slip in while the event is being cancelled.
       requestBody:
         required: true
         content:
@@ -478,9 +499,6 @@ paths:
       responses:
         '201':
           description: Seats are held until `expiresAt`.
-          headers:
-            Location:
-              $ref: '#/components/headers/Location'
           content:
             application/json:
               schema:
@@ -489,8 +507,46 @@ paths:
           $ref: '#/components/responses/ValidationError'
         '401':
           $ref: '#/components/responses/Unauthenticated'
+        '403':
+          description: Caller is authenticated but is not a Buyer.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: https://ticketium.example/problems/forbidden
+                title: Access denied
+                status: 403
+                detail: Only users with the 'Buyer' role can hold seats.
+                instance: /api/v1/events/3fa85f64-5717-4562-b3fc-2c963f66afa6/holds
+                traceId: 00-e6f708192a3b4c5de6f708192a3b4c5d-e6f708192a3b4c5d-01
         '404':
-          $ref: '#/components/responses/NotFound'
+          description: The event does not exist, or a requested seat label does not exist in the event's seat map.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/NotFoundProblemDetails'
+              examples:
+                eventNotFound:
+                  summary: Event does not exist
+                  value:
+                    type: https://ticketium.example/problems/not-found
+                    title: Resource not found
+                    status: 404
+                    detail: Event '3fa85f64-5717-4562-b3fc-2c963f66afa6' was not found.
+                    instance: /api/v1/events/3fa85f64-5717-4562-b3fc-2c963f66afa6/holds
+                    traceId: 00-f60718293a4b5c6df60718293a4b5c6d-f60718293a4b5c6d-01
+                    resource: event
+                seatNotFound:
+                  summary: Seat label does not exist in the seat map
+                  value:
+                    type: https://ticketium.example/problems/not-found
+                    title: Resource not found
+                    status: 404
+                    detail: Seat 'Z-99' does not exist for this event.
+                    instance: /api/v1/events/3fa85f64-5717-4562-b3fc-2c963f66afa6/holds
+                    traceId: 00-718293a4b5c6d7e8718293a4b5c6d7e8-718293a4b5c6d7e8-01
+                    resource: seat
         '409':
           description: Seats cannot be held right now.
           content:
@@ -511,7 +567,7 @@ paths:
                     traceId: 00-8f90a1b2c3d4e5f68f90a1b2c3d4e5f6-8f90a1b2c3d4e5f6-01
                     unavailableSeats: [A-12]
                 eventNotOnSale:
-                  summary: Event is cancelled, sold out or sales are closed
+                  summary: Event is cancelled, sold out, or sales are not open yet or already closed
                   value:
                     type: https://ticketium.example/problems/event-not-on-sale
                     title: Event is not on sale
@@ -549,11 +605,29 @@ paths:
       operationId: releaseHold
       summary: Release a hold before it expires
       description: |
-        Idempotent. Holds belonging to other users are reported as `404` (not `403`)
-        so that hold identifiers cannot be enumerated.
+        Idempotent: releasing a hold that is already released or expired returns `204`.
+        Holds belonging to other users are reported as `404` (not `403`) so that hold
+        identifiers cannot be enumerated. A released hold no longer exists for the API:
+        a later payment for it returns `404`. Its record is kept internally for audit.
       responses:
         '204':
-          description: Hold released (or was already released).
+          description: Hold released (or was already released or expired).
+        '400':
+          description: The hold id in the path is not a valid UUID.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ValidationProblemDetails'
+              example:
+                type: https://ticketium.example/problems/validation-error
+                title: One or more validation errors occurred
+                status: 400
+                detail: The request contains 1 invalid value.
+                instance: /api/v1/holds/9b2e6f1a-4c3d
+                traceId: 00-f708192a3b4c5d6ef708192a3b4c5d6e-f708192a3b4c5d6e-01
+                errors:
+                  - parameter: holdId
+                    detail: Must be a valid UUID.
         '401':
           $ref: '#/components/responses/Unauthenticated'
         '404':
@@ -575,6 +649,8 @@ paths:
           $ref: '#/components/responses/TooManyRequests'
         '500':
           $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
 
   # ---------------------------------------------------------------- Payment
   /holds/{holdId}/payment:
@@ -583,19 +659,29 @@ paths:
     post:
       tags: [Payment]
       operationId: payForHold
-      summary: Pay for held seats and issue tickets
+      summary: Pay for held seats and issue tickets (Buyer)
       description: |
-        Charges the buyer through the external payment gateway (timeout + retries +
-        circuit breaker) and, on success, converts the hold into tickets.
+        Authorizes the amount through the external payment gateway (timeout + retries +
+        circuit breaker) and, on success, converts the hold into tickets. The amount is
+        captured in the background after the booking is confirmed, so the returned
+        transaction has status `Authorized` or `Captured`.
 
         The request must carry an `Idempotency-Key`. Repeating the request with the
-        same key and body returns the original result instead of charging twice.
+        same key, path and body returns the original result instead of charging twice.
+        `500` and `503` responses are not stored: the checkout did not complete, so the
+        key is released and a retry with the same key runs the checkout again.
 
         Failure semantics (saga):
-        - `402`, `502`, `504` — the charge failed or its outcome could not be confirmed;
-          any authorization is voided and the hold is **released** (`holdReleased: true`).
-        - `503` — the circuit breaker is open, no charge was attempted; the hold is
-          **kept** until `expiresAt` and the client may retry after `Retry-After`.
+        - `402` — the gateway declined; nothing was authorized and the hold is
+          **released** (`holdReleased: true`).
+        - `502`, `504` — the outcome is uncertain; any pending authorization is voided and
+          the hold is **released** (`holdReleased: true`).
+        - `503 payment-unavailable` — the circuit breaker is open or payment capacity is
+          exhausted, no authorization was attempted; the hold is **kept** until `expiresAt`
+          and the client may retry after `Retry-After`.
+        - If the hold expires, is released or its event is cancelled while the amount is
+          being authorized, the authorization is voided and `410`, `404` or `409
+          event-not-on-sale` is returned.
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -606,16 +692,13 @@ paths:
               $ref: '#/components/schemas/PaymentRequest'
       responses:
         '201':
-          description: Payment captured, tickets issued.
-          headers:
-            Location:
-              $ref: '#/components/headers/Location'
+          description: Booking confirmed and tickets issued; the amount is captured in the background.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Transaction'
         '400':
-          description: Invalid body or missing / malformed `Idempotency-Key`.
+          description: Invalid body, malformed hold id, or missing / malformed `Idempotency-Key`.
           content:
             application/problem+json:
               schema:
@@ -647,10 +730,37 @@ paths:
                 traceId: 00-d4e5f60718293a4bd4e5f60718293a4b-d4e5f60718293a4b-01
                 declineCode: insufficient_funds
                 holdReleased: true
+        '403':
+          description: Caller is authenticated but is not a Buyer.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: https://ticketium.example/problems/forbidden
+                title: Access denied
+                status: 403
+                detail: Only users with the 'Buyer' role can pay for holds.
+                instance: /api/v1/holds/9b2e6f1a-4c3d-4e5f-8a7b-6c5d4e3f2a1b/payment
+                traceId: 00-08192a3b4c5d6e7f08192a3b4c5d6e7f-08192a3b4c5d6e7f-01
         '404':
-          $ref: '#/components/responses/NotFound'
+          description: |
+            The hold does not exist, belongs to another user, or was released by the buyer
+            (a released hold no longer exists for the API).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/NotFoundProblemDetails'
+              example:
+                type: https://ticketium.example/problems/not-found
+                title: Resource not found
+                status: 404
+                detail: Hold '9b2e6f1a-4c3d-4e5f-8a7b-6c5d4e3f2a1b' was not found.
+                instance: /api/v1/holds/9b2e6f1a-4c3d-4e5f-8a7b-6c5d4e3f2a1b/payment
+                traceId: 00-3a4b5c6d7e8f90a13a4b5c6d7e8f90a1-3a4b5c6d7e8f90a1-02
+                resource: hold
         '409':
-          description: Request conflicts with the current state of the hold or with a previous request.
+          description: Request conflicts with the current state of the hold or its event, or with a previous request.
           content:
             application/problem+json:
               schema:
@@ -666,12 +776,12 @@ paths:
                     instance: /api/v1/holds/9b2e6f1a-4c3d-4e5f-8a7b-6c5d4e3f2a1b/payment
                     traceId: 00-e5f60718293a4b5ce5f60718293a4b5c-e5f60718293a4b5c-01
                 idempotencyKeyReused:
-                  summary: Same Idempotency-Key, different body
+                  summary: Same Idempotency-Key, different request
                   value:
                     type: https://ticketium.example/problems/idempotency-key-reused
                     title: Idempotency key reused with a different request
                     status: 409
-                    detail: Key '5f0c7b2e-...' was already used with a different request body.
+                    detail: Key '5f0c7b2e-...' was already used with a different request.
                     instance: /api/v1/holds/9b2e6f1a-4c3d-4e5f-8a7b-6c5d4e3f2a1b/payment
                     traceId: 00-f60718293a4b5c6df60718293a4b5c6d-f60718293a4b5c6d-01
                 requestInProgress:
@@ -683,6 +793,15 @@ paths:
                     detail: A payment with this Idempotency-Key is still being processed.
                     instance: /api/v1/holds/9b2e6f1a-4c3d-4e5f-8a7b-6c5d4e3f2a1b/payment
                     traceId: 00-0718293a4b5c6d7e0718293a4b5c6d7e-0718293a4b5c6d7e-01
+                eventNotOnSale:
+                  summary: The event was cancelled while the buyer was at checkout
+                  value:
+                    type: https://ticketium.example/problems/event-not-on-sale
+                    title: Event is not on sale
+                    status: 409
+                    detail: The event was cancelled; your hold was released and you were not charged.
+                    instance: /api/v1/holds/9b2e6f1a-4c3d-4e5f-8a7b-6c5d4e3f2a1b/payment
+                    traceId: 00-192a3b4c5d6e7f80192a3b4c5d6e7f80-192a3b4c5d6e7f80-01
         '410':
           description: The hold expired before payment; seats were released.
           content:
@@ -697,6 +816,7 @@ paths:
                 instance: /api/v1/holds/9b2e6f1a-4c3d-4e5f-8a7b-6c5d4e3f2a1b/payment
                 traceId: 00-18293a4b5c6d7e8f18293a4b5c6d7e8f-18293a4b5c6d7e8f-01
                 expiredAt: '2026-10-23T14:10:00Z'
+                holdReleased: true
         '429':
           $ref: '#/components/responses/TooManyRequests'
         '500':
@@ -711,27 +831,43 @@ paths:
                 type: https://ticketium.example/problems/payment-gateway-error
                 title: Payment provider error
                 status: 502
-                detail: The payment provider returned an unexpected response. You were not charged.
+                detail: The payment provider returned an unexpected response. Any pending authorization will be voided.
                 instance: /api/v1/holds/9b2e6f1a-4c3d-4e5f-8a7b-6c5d4e3f2a1b/payment
                 traceId: 00-293a4b5c6d7e8f90293a4b5c6d7e8f90-293a4b5c6d7e8f90-01
                 holdReleased: true
         '503':
-          description: Payment is temporarily unavailable (circuit breaker open). Hold is kept.
+          description: |
+            Payment is temporarily unavailable (circuit breaker open or payment capacity
+            exhausted; the hold is kept), or a required dependency is unreachable.
           headers:
             Retry-After:
               $ref: '#/components/headers/RetryAfter'
           content:
             application/problem+json:
               schema:
-                $ref: '#/components/schemas/PaymentProblemDetails'
-              example:
-                type: https://ticketium.example/problems/payment-unavailable
-                title: Payment is temporarily unavailable
-                status: 503
-                detail: Payments are temporarily unavailable. Your seats stay held until 2026-10-23T14:10:00Z.
-                instance: /api/v1/holds/9b2e6f1a-4c3d-4e5f-8a7b-6c5d4e3f2a1b/payment
-                traceId: 00-3a4b5c6d7e8f90a13a4b5c6d7e8f90a1-3a4b5c6d7e8f90a1-01
-                holdReleased: false
+                anyOf:
+                  - $ref: '#/components/schemas/PaymentProblemDetails'
+                  - $ref: '#/components/schemas/ProblemDetails'
+              examples:
+                paymentUnavailable:
+                  summary: Circuit breaker open, hold is kept
+                  value:
+                    type: https://ticketium.example/problems/payment-unavailable
+                    title: Payment is temporarily unavailable
+                    status: 503
+                    detail: Payments are temporarily unavailable. Your seats stay held until 2026-10-23T14:10:00Z.
+                    instance: /api/v1/holds/9b2e6f1a-4c3d-4e5f-8a7b-6c5d4e3f2a1b/payment
+                    traceId: 00-3a4b5c6d7e8f90a13a4b5c6d7e8f90a1-3a4b5c6d7e8f90a1-01
+                    holdReleased: false
+                serviceUnavailable:
+                  summary: Database unreachable
+                  value:
+                    type: https://ticketium.example/problems/service-unavailable
+                    title: Service temporarily unavailable
+                    status: 503
+                    detail: The service is temporarily unavailable. Please retry shortly.
+                    instance: /api/v1/holds/9b2e6f1a-4c3d-4e5f-8a7b-6c5d4e3f2a1b/payment
+                    traceId: 00-2a3b4c5d6e7f80912a3b4c5d6e7f8091-2a3b4c5d6e7f8091-01
         '504':
           description: The payment gateway did not respond in time.
           content:
@@ -752,7 +888,12 @@ paths:
     get:
       tags: [Tickets]
       operationId: listMyTickets
-      summary: List tickets purchased by the current buyer
+      summary: List tickets purchased by the current buyer (order history)
+      description: |
+        Returns all tickets of the buyer, newest purchase first, including tickets of
+        cancelled events. Each ticket carries its `transactionId` and `purchasedAt`, so the
+        SPA groups tickets into orders to show the order history (SRS FR-14). Available to
+        every signed-in user; users without purchases get an empty page.
       parameters:
         - name: page
           in: query
@@ -782,6 +923,8 @@ paths:
           $ref: '#/components/responses/TooManyRequests'
         '500':
           $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
 
 components:
   securitySchemes:
@@ -845,7 +988,7 @@ components:
 
   responses:
     ValidationError:
-      description: The request is malformed or fails validation.
+      description: The request is malformed or fails validation (the example shows a sign-up request).
       content:
         application/problem+json:
           schema:
@@ -1003,7 +1146,7 @@ components:
           description: Identifies this occurrence (the request path).
         traceId:
           type: string
-          description: W3C trace id of the request; quote it when contacting support.
+          description: W3C `traceparent` of the request (contains the trace id); quote it when contacting support.
       additionalProperties: true
 
     ValidationProblemDetails:
@@ -1035,11 +1178,16 @@ components:
         header:
           type: string
           description: Name of the invalid request header.
+      oneOf:
+        - required: [pointer]
+        - required: [parameter]
+        - required: [header]
 
     NotFoundProblemDetails:
       allOf:
         - $ref: '#/components/schemas/ProblemDetails'
         - type: object
+          required: [resource]
           properties:
             resource:
               type: string
@@ -1054,7 +1202,7 @@ components:
             rule:
               type: string
               description: Machine-readable id of the violated rule.
-              enum: [venue-double-booking, capacity-below-sold, capacity-exceeds-venue, price-change-after-sales-start]
+              enum: [venue-double-booking, price-change-after-sales-open]
 
     SeatUnavailableProblemDetails:
       allOf:
@@ -1086,11 +1234,14 @@ components:
       allOf:
         - $ref: '#/components/schemas/ProblemDetails'
         - type: object
-          required: [expiredAt]
+          required: [expiredAt, holdReleased]
           properties:
             expiredAt:
               type: string
               format: date-time
+            holdReleased:
+              type: boolean
+              description: Always `true`; the seats were released when the hold expired.
 
     PaymentProblemDetails:
       allOf:
@@ -1104,12 +1255,13 @@ components:
             declineCode:
               type: string
               description: Gateway decline reason, present for `payment-declined` only.
-              enum: [insufficient_funds, card_declined, expired_card, incorrect_cvc, fraud_suspected, authentication_required]
+              enum: [insufficient_funds, card_declined, expired_card, incorrect_cvc, fraud_suspected]
 
     # ------------------------------------------------ Domain DTOs
     SignUpRequest:
       type: object
-      required: [email, password, role]
+      description: Every new account gets the `Buyer` role; the Organizer role is granted by an administrator.
+      required: [email, password]
       properties:
         email:
           type: string
@@ -1120,9 +1272,6 @@ components:
           format: password
           minLength: 8
           maxLength: 128
-        role:
-          type: string
-          enum: [Buyer, Organizer]
 
     SignInRequest:
       type: object
@@ -1177,20 +1326,23 @@ components:
           type: string
           format: date-time
           description: Must be in the future.
+        salesOpenAt:
+          type: string
+          format: date-time
+          description: When ticket sales open. Defaults to the creation time. Must be earlier than `salesCloseAt`.
         salesCloseAt:
           type: string
           format: date-time
           description: Defaults to `startsAt`. Must not be later than `startsAt`.
         price:
           $ref: '#/components/schemas/Money'
-        capacity:
-          type: integer
-          minimum: 1
-          description: Defaults to the venue capacity; must not exceed it.
 
     UpdateEventRequest:
       type: object
-      required: [title, startsAt, price, capacity]
+      description: |
+        The venue, and therefore the seat map and capacity, cannot be changed. The price
+        cannot be changed after sales have opened (`422`, rule `price-change-after-sales-open`).
+      required: [title, startsAt, price]
       properties:
         title:
           type: string
@@ -1200,16 +1352,16 @@ components:
           type: string
           format: date-time
           description: Must be in the future.
+        salesOpenAt:
+          type: string
+          format: date-time
+          description: Must be earlier than `salesCloseAt`; cannot be moved once sales have opened.
         salesCloseAt:
           type: string
           format: date-time
           description: Defaults to `startsAt`. Must not be later than `startsAt`.
         price:
           $ref: '#/components/schemas/Money'
-        capacity:
-          type: integer
-          minimum: 1
-          description: Must not exceed the venue capacity or be below the number of sold tickets.
 
     CancelEventRequest:
       type: object
@@ -1260,16 +1412,32 @@ components:
         startsAt:
           type: string
           format: date-time
+        salesOpenAt:
+          type: string
+          format: date-time
         salesCloseAt:
           type: string
           format: date-time
         status:
           type: string
-          enum: [OnSale, SoldOut, SalesClosed, Cancelled]
+          description: |
+            `Cancelled` and `SoldOut` are stored; the others follow from the clock:
+            `Scheduled` before `salesOpenAt`, `OnSale` until `salesCloseAt`,
+            `SalesClosed` until `startsAt`, `Started` afterwards.
+          enum: [Scheduled, OnSale, SoldOut, SalesClosed, Started, Cancelled]
         price:
           $ref: '#/components/schemas/Money'
         capacity:
           type: integer
+          readOnly: true
+          description: Number of seats in the venue's seat map.
+        cancelledAt:
+          type: string
+          format: date-time
+          description: Present when `status` is `Cancelled`.
+        cancellationReason:
+          type: string
+          description: Present when `status` is `Cancelled`; shown to buyers.
 
     EventDetails:
       allOf:
@@ -1352,7 +1520,8 @@ components:
           type: string
           description: |
             Single-use token produced by the payment gateway's client-side SDK.
-            Raw card data never reaches Ticketium (PCI DSS, SRS C-1).
+            Raw card data never reaches Ticketium (PCI DSS, SRS C-1). Strong customer
+            authentication (3-D Secure) is completed in the SDK before the token is issued.
 
     Transaction:
       type: object
@@ -1366,7 +1535,12 @@ components:
           $ref: '#/components/schemas/Money'
         status:
           type: string
-          enum: [Captured, Refunded]
+          description: |
+            `Authorized` — booking confirmed, amount reserved and being captured;
+            `Captured` — money taken; `Voided` — authorization released without capture
+            (event cancelled before capture); `RefundPending` — event cancelled, refund
+            being retried; `Refunded` — money returned.
+          enum: [Authorized, Captured, Voided, RefundPending, Refunded]
         createdAt:
           type: string
           format: date-time
@@ -1377,7 +1551,7 @@ components:
 
     Ticket:
       type: object
-      required: [id, eventId, seatLabel, price, status]
+      required: [id, eventId, transactionId, seatLabel, price, status, purchasedAt]
       properties:
         id:
           type: string
@@ -1385,13 +1559,24 @@ components:
         eventId:
           type: string
           format: uuid
+        transactionId:
+          type: string
+          format: uuid
+          description: The order (payment) this ticket belongs to.
         seatLabel:
           type: string
         price:
           $ref: '#/components/schemas/Money'
         status:
           type: string
-          enum: [Valid, Refunded, Cancelled]
+          description: |
+            `Valid` — admits to the event; `Cancelled` — the event was cancelled and the
+            refund is in progress; `Refunded` — the event was cancelled and the money was
+            returned (or the authorization voided).
+          enum: [Valid, Cancelled, Refunded]
+        purchasedAt:
+          type: string
+          format: date-time
 
     TicketPage:
       type: object
